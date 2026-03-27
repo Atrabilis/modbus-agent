@@ -3,6 +3,7 @@ package internal
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -254,6 +255,25 @@ func U32LE(b []byte) uint32 {
 }
 
 func S32LE(b []byte) int32 { return int32(U32LE(b)) }
+
+func F32BE(b []byte) float32 {
+	if len(b) < 4 {
+		return 0
+	}
+	return math.Float32frombits(U32(b))
+}
+
+func U64BE(b []byte) uint64 {
+	if len(b) < 8 {
+		return 0
+	}
+	return uint64(b[0])<<56 | uint64(b[1])<<48 | uint64(b[2])<<40 | uint64(b[3])<<32 |
+		uint64(b[4])<<24 | uint64(b[5])<<16 | uint64(b[6])<<8 | uint64(b[7])
+}
+
+func S64BE(b []byte) int64 {
+	return int64(U64BE(b))
+}
 
 // RawHex returns the raw register bytes as a hex string (e.g. for MLD blocks).
 // For 21 words this yields up to 84 hex chars. Intended for analyst interpretation.

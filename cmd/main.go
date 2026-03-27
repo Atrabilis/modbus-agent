@@ -202,6 +202,21 @@ func main() {
 					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 					writeValue = v
 
+				case "F32BE":
+					v := float64(internal.F32BE(decodedResp)) * reg.Gain
+					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+					writeValue = v
+
+				case "U64BE":
+					v := float64(internal.U64BE(decodedResp)) * reg.Gain
+					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+					writeValue = v
+
+				case "S64BE":
+					v := float64(internal.S64BE(decodedResp)) * reg.Gain
+					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+					writeValue = v
+
 				default:
 					log.Printf("    unknown datatype=%q at addr=%d (raw=% x)", reg.Datatype, reg.Register, resp)
 					continue
