@@ -17,11 +17,8 @@ import (
 
 var (
 	configPath      = flag.String("configPath", "", "Path to the config file")
+	envPath         = flag.String("envPath", "/etc/atamostec/modbus-agent/modbus-agent.env", "Path to the dotenv file")
 	interrogateOnly = flag.Bool("interrogateOnly", false, "Read devices without writing to configured storage outputs")
-)
-
-const (
-	envPath = "/home/lalcktur/ATAMOSTEC-LALCKTUR/.env"
 )
 
 type storageWriter interface {
@@ -45,7 +42,7 @@ func main() {
 		log.Fatalf("Registers file path is required")
 	}
 
-	if err := dotenv.Load(envPath); err != nil {
+	if err := dotenv.Load(*envPath); err != nil {
 		log.Fatalf("Error loading .env file: %v", err)
 	}
 
