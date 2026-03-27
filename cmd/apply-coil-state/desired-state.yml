@@ -1,0 +1,42 @@
+device:
+  name: "logo8"
+  ip: "192.168.100.200"
+  port: 510
+  slave_id: 1
+  offset: 1
+
+writes:
+  #activar limite switch
+  - register: 8260
+    name: "M4"
+    value: false
+
+  - register: 8263
+    name: "M7"
+    value: false
+
+  - register: 8267
+    name: "M11"
+    value: false
+
+  - register: 8270
+    name: "M14"
+    value: false
+
+  #inhabilitar limite switch
+  - register: 8273
+    name: "M17"
+    value: false
+
+  - register: 8274
+    name: "M18"
+    value: false
+
+  - register: 8275
+    name: "M19"
+    value: false
+
+  - register: 8276
+    name: "M20"
+    value: false
+
