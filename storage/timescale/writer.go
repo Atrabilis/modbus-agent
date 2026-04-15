@@ -107,6 +107,13 @@ func (w *Writer) Name() string {
 	return w.name
 }
 
+func (w *Writer) Available() bool {
+	if w == nil {
+		return false
+	}
+	return w.available
+}
+
 func (w *Writer) Write(tags map[string]string, fields map[string]interface{}, ts time.Time) {
 	if w == nil || !w.available || w.pool == nil {
 		return

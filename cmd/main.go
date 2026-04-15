@@ -25,6 +25,7 @@ var (
 
 type storageWriter interface {
 	Name() string
+	Available() bool
 	Write(tags map[string]string, fields map[string]interface{}, ts time.Time)
 	Flush()
 	Close()
@@ -259,6 +260,10 @@ func main() {
 	if len(writers) > 0 {
 		fmt.Printf("Dispatching %d samples to %d storage outputs\n", len(samples), len(writers))
 		for _, w := range writers {
+			if !w.Available() {
+				fmt.Printf("Skipping output: %s (backend unavailable)\n", w.Name())
+				continue
+			}
 			fmt.Printf("Writing to output: %s\n", w.Name())
 			for _, s := range samples {
 				w.Write(s.Tags, s.Fields, s.Timestamp)
