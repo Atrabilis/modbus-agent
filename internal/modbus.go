@@ -289,9 +289,10 @@ func RawHex(b []byte) string {
 	return string(out)
 }
 
-// MergeTags builds the Influx tag map from device, slave, and register tags (YAML).
-// Order: device < slave < register. Then defaults: device name, slave name, unit from register.Unit,
-// and legacy flags (module_number, module_label) if set. All tag values are strings.
+// MergeTags builds the merged tag map from device, slave, and register tags (YAML).
+// Order: device < slave < register. Then defaults: device_name/slave_name/slave_id, unit from register.Unit,
+// backward-compatible aliases device/slave, and legacy flags (module_number, module_label) if set.
+// All tag values are strings.
 func MergeTags(dev *Device, slave *Slave, reg *Register) map[string]string {
 	out := make(map[string]string)
 	for k, v := range dev.Tags {
@@ -303,11 +304,22 @@ func MergeTags(dev *Device, slave *Slave, reg *Register) map[string]string {
 	for k, v := range reg.Tags {
 		out[k] = v
 	}
-	if out["device"] == "" && dev.Name != "" {
-		out["device"] = dev.Name
+	// Canonical identifiers used by Timescale writer.
+	if out["device_name"] == "" && dev.Name != "" {
+		out["device_name"] = dev.Name
 	}
-	if out["slave"] == "" && slave.Name != "" {
-		out["slave"] = slave.Name
+	if out["slave_name"] == "" && slave.Name != "" {
+		out["slave_name"] = slave.Name
+	}
+	if out["slave_id"] == "" {
+		out["slave_id"] = strconv.Itoa(slave.SlaveID)
+	}
+	// Backward-compatible aliases for existing Influx dashboards/queries.
+	if out["device"] == "" && out["device_name"] != "" {
+		out["device"] = out["device_name"]
+	}
+	if out["slave"] == "" && out["slave_name"] != "" {
+		out["slave"] = out["slave_name"]
 	}
 	if out["unit"] == "" && reg.Unit != "" {
 		out["unit"] = reg.Unit

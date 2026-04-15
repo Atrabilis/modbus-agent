@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atrabilis/modbus-agent/internal"
 	"github.com/atrabilis/modbus-agent/storage"
 	"github.com/atrabilis/modbus-agent/storage/influx"
+	"github.com/atrabilis/modbus-agent/storage/timescale"
 
 	"github.com/goburrow/modbus"
 	dotenv "github.com/joho/godotenv"
@@ -71,7 +73,7 @@ func main() {
 				continue
 			}
 
-			switch output.Type {
+			switch strings.ToLower(strings.TrimSpace(output.Type)) {
 			case "influxdb2":
 				w, err := influx.NewWriter(output.Name, influx.Config{
 					HostEnv:     output.Influxdb2.HostEnv,
@@ -79,6 +81,20 @@ func main() {
 					OrgEnv:      output.Influxdb2.OrgEnv,
 					Bucket:      output.Influxdb2.Bucket,
 					Measurement: output.Influxdb2.Measurement,
+				})
+				if err != nil {
+					log.Fatalf("Error initializing storage output %q: %v", output.Name, err)
+				}
+				writers = append(writers, w)
+			case "timescaledb":
+				w, err := timescale.NewWriter(output.Name, timescale.Config{
+					HostEnv:     output.Timescaledb.HostEnv,
+					PortEnv:     output.Timescaledb.PortEnv,
+					UserEnv:     output.Timescaledb.UserEnv,
+					PasswordEnv: output.Timescaledb.PasswordEnv,
+					DatabaseEnv: output.Timescaledb.DatabaseEnv,
+					Schema:      output.Timescaledb.Schema,
+					Table:       output.Timescaledb.Table,
 				})
 				if err != nil {
 					log.Fatalf("Error initializing storage output %q: %v", output.Name, err)
@@ -222,7 +238,7 @@ func main() {
 					continue
 				}
 
-				// One sample per register. raw_<name> preserves the raw Modbus response.
+				// One sample per register. raw_<name> is kept for backends that use raw telemetry.
 				tags := internal.MergeTags(&dev, &slave, &reg)
 				fields := map[string]interface{}{
 					reg.Name:          writeValue,

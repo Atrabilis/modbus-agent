@@ -16,10 +16,11 @@ type Config struct {
 }
 
 type OutputConfig struct {
-	Name      string          `yaml:"name"`
-	Type      string          `yaml:"type"`
-	Enabled   *bool           `yaml:"enabled,omitempty"`
-	Influxdb2 Influxdb2Config `yaml:"influxdb2,omitempty"`
+	Name        string            `yaml:"name"`
+	Type        string            `yaml:"type"`
+	Enabled     *bool             `yaml:"enabled,omitempty"`
+	Influxdb2   Influxdb2Config   `yaml:"influxdb2,omitempty"`
+	Timescaledb TimescaledbConfig `yaml:"timescaledb,omitempty"`
 }
 
 type Influxdb2Config struct {
@@ -28,6 +29,16 @@ type Influxdb2Config struct {
 	OrgEnv      string `yaml:"org_env"`
 	Bucket      string `yaml:"bucket"`
 	Measurement string `yaml:"measurement"`
+}
+
+type TimescaledbConfig struct {
+	HostEnv     string `yaml:"host_env"`
+	PortEnv     string `yaml:"port_env"`
+	UserEnv     string `yaml:"user_env"`
+	PasswordEnv string `yaml:"password_env"`
+	DatabaseEnv string `yaml:"database_env"`
+	Schema      string `yaml:"schema"`
+	Table       string `yaml:"table"`
 }
 
 func (o OutputConfig) IsEnabled() bool {
