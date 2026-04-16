@@ -37,6 +37,85 @@ type sample struct {
 	Timestamp time.Time
 }
 
+func aggregateSamplesForTimescale(samples []sample) []sample {
+	rowsByKey := make(map[string]*sample, len(samples))
+	order := make([]string, 0, len(samples))
+
+	for i, s := range samples {
+		deviceName := firstNonEmptyTagValue(s.Tags, "device_name", "device")
+		slaveName := firstNonEmptyTagValue(s.Tags, "slave_name", "slave")
+
+		// Keep malformed samples isolated so writer warnings remain visible.
+		key := fmt.Sprintf("invalid:%d", i)
+		if deviceName != "" && slaveName != "" {
+			key = fmt.Sprintf("%s|%s|%s", s.Timestamp.UTC().Format(time.RFC3339Nano), deviceName, slaveName)
+		}
+
+		existing, ok := rowsByKey[key]
+		if !ok {
+			rowsByKey[key] = &sample{
+				Tags:      copyStringMap(s.Tags),
+				Fields:    copyInterfaceMap(s.Fields),
+				Timestamp: s.Timestamp,
+			}
+			order = append(order, key)
+			continue
+		}
+
+		for k, v := range s.Tags {
+			if strings.TrimSpace(v) == "" {
+				continue
+			}
+			if strings.TrimSpace(existing.Tags[k]) == "" {
+				existing.Tags[k] = v
+			}
+		}
+		for k, v := range s.Fields {
+			existing.Fields[k] = v
+		}
+	}
+
+	rows := make([]sample, 0, len(order))
+	for _, key := range order {
+		rows = append(rows, *rowsByKey[key])
+	}
+	return rows
+}
+
+func firstNonEmptyTagValue(tags map[string]string, keys ...string) string {
+	for _, k := range keys {
+		if tags == nil {
+			return ""
+		}
+		if v := strings.TrimSpace(tags[k]); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func copyInterfaceMap(in map[string]interface{}) map[string]interface{} {
+	if len(in) == 0 {
+		return map[string]interface{}{}
+	}
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 func main() {
 	// Stage 0: bootstrap (flags, environment, and execution timing).
 	fmt.Println("Time of execution:", time.Now().UTC().Format("2006-01-02 15:04:05"))
@@ -259,12 +338,29 @@ func main() {
 	// Stage 4: dispatch accumulated samples to each configured output.
 	if len(writers) > 0 {
 		fmt.Printf("Dispatching %d samples to %d storage outputs\n", len(samples), len(writers))
+		var timescaleRows []sample
+		timescaleRowsReady := false
+
 		for _, w := range writers {
 			if !w.Available() {
 				fmt.Printf("Skipping output: %s (backend unavailable)\n", w.Name())
 				continue
 			}
 			fmt.Printf("Writing to output: %s\n", w.Name())
+
+			if _, isTimescale := w.(*timescale.Writer); isTimescale {
+				if !timescaleRowsReady {
+					timescaleRows = aggregateSamplesForTimescale(samples)
+					timescaleRowsReady = true
+					fmt.Printf("Timescale row aggregation: %d samples -> %d row upserts\n", len(samples), len(timescaleRows))
+				}
+				for _, s := range timescaleRows {
+					w.Write(s.Tags, s.Fields, s.Timestamp)
+				}
+				w.Flush()
+				continue
+			}
+
 			for _, s := range samples {
 				w.Write(s.Tags, s.Fields, s.Timestamp)
 			}
