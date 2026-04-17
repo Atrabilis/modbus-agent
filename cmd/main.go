@@ -384,11 +384,13 @@ func main() {
 
 	// Stage 4: dispatch accumulated samples to each configured output.
 	if len(writers) > 0 {
+		dispatchBegin := time.Now()
 		fmt.Printf("Dispatching %d samples to %d storage outputs\n", len(samples), len(writers))
 		var timescaleRows []sample
 		timescaleRowsReady := false
 
 		for _, w := range writers {
+			outputBegin := time.Now()
 			if !w.Available() {
 				fmt.Printf("Skipping output: %s (backend unavailable)\n", w.Name())
 				continue
@@ -397,22 +399,34 @@ func main() {
 
 			if _, isTimescale := w.(*timescale.Writer); isTimescale {
 				if !timescaleRowsReady {
+					aggBegin := time.Now()
 					timescaleRows = aggregateSamplesForTimescale(samples)
 					timescaleRowsReady = true
-					fmt.Printf("Timescale row aggregation: %d samples -> %d row upserts\n", len(samples), len(timescaleRows))
+					fmt.Printf("Timescale row aggregation: %d samples -> %d row upserts (%s)\n", len(samples), len(timescaleRows), time.Since(aggBegin))
 				}
+				writeBegin := time.Now()
 				for _, s := range timescaleRows {
 					w.Write(s.Tags, s.Fields, s.Timestamp)
 				}
+				writeDuration := time.Since(writeBegin)
+				flushBegin := time.Now()
 				w.Flush()
+				flushDuration := time.Since(flushBegin)
+				fmt.Printf("Output %s timings: write=%s flush=%s total=%s\n", w.Name(), writeDuration, flushDuration, time.Since(outputBegin))
 				continue
 			}
 
+			writeBegin := time.Now()
 			for _, s := range samples {
 				w.Write(s.Tags, s.Fields, s.Timestamp)
 			}
+			writeDuration := time.Since(writeBegin)
+			flushBegin := time.Now()
 			w.Flush()
+			flushDuration := time.Since(flushBegin)
+			fmt.Printf("Output %s timings: write=%s flush=%s total=%s\n", w.Name(), writeDuration, flushDuration, time.Since(outputBegin))
 		}
+		fmt.Printf("Stage 4 dispatch time: %s\n", time.Since(dispatchBegin))
 	}
 
 	// Stage 5: finish execution.
