@@ -117,48 +117,51 @@ func copyInterfaceMap(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
-func pollDevice(dev internal.Device, ts time.Time) ([]sample, error) {
-	fmt.Println("Device:", dev.Name)
+func pollDevice(dev internal.Device, ts time.Time) ([]sample, string, error) {
+	var out strings.Builder
+	fmt.Fprintf(&out, "Device: %s\n", dev.Name)
 
 	addr := dev.IP + ":" + strconv.Itoa(dev.Port)
 	handler := modbus.NewTCPClientHandler(addr)
 	handler.Timeout = 5 * time.Second
 
 	if err := handler.Connect(); err != nil {
-		return nil, fmt.Errorf("unable to connect to Modbus endpoint %s: %w", addr, err)
+		fmt.Fprintf(&out, "  ERROR: unable to connect to Modbus endpoint %s: %v\n", addr, err)
+		return nil, out.String(), fmt.Errorf("unable to connect to Modbus endpoint %s: %w", addr, err)
 	}
 
 	client := modbus.NewClient(handler)
 	if !internal.RunDeviceHealthcheck(dev, handler, client) {
 		if err := handler.Close(); err != nil {
-			log.Printf("close error for device %s after healthcheck failure: %v", dev.Name, err)
+			fmt.Fprintf(&out, "  ERROR: close after healthcheck failure: %v\n", err)
 		}
-		return nil, fmt.Errorf("healthcheck failed; skipping polling")
+		fmt.Fprintf(&out, "  ERROR: healthcheck failed; skipping polling\n")
+		return nil, out.String(), fmt.Errorf("healthcheck failed; skipping polling")
 	}
 
 	deviceSamples := make([]sample, 0, 256)
 	for _, slave := range dev.Slaves {
-		fmt.Println("  Slave:", slave.Name)
+		fmt.Fprintf(&out, "  Slave: %s\n", slave.Name)
 		handler.SlaveId = byte(slave.SlaveID)
 
 		for _, reg := range slave.Registers {
 			resp, err := internal.ReadRegisters(client, reg, slave.Offset)
 			if err != nil {
-				log.Printf("    read err fc=%d addr=%d words=%d: %v", reg.FunctionCode, reg.Register, reg.Words, err)
+				fmt.Fprintf(&out, "    read err fc=%d addr=%d words=%d: %v\n", reg.FunctionCode, reg.Register, reg.Words, err)
 				continue
 			}
 			want := internal.ExpectedResponseBytes(reg)
 			if len(resp) != want {
-				log.Printf("    unexpected length at addr=%d: got=%d want=%d", reg.Register, len(resp), want)
+				fmt.Fprintf(&out, "    unexpected length at addr=%d: got=%d want=%d\n", reg.Register, len(resp), want)
 				continue
 			}
 			if reg.Name == "" {
-				log.Printf("    register at addr=%d has empty name; skipping", reg.Register)
+				fmt.Fprintf(&out, "    register at addr=%d has empty name; skipping\n", reg.Register)
 				continue
 			}
 			decodedResp, err := internal.DecodeResponseBytes(reg, resp)
 			if err != nil {
-				log.Printf("    decode err fc=%d addr=%d words=%d: %v", reg.FunctionCode, reg.Register, reg.Words, err)
+				fmt.Fprintf(&out, "    decode err fc=%d addr=%d words=%d: %v\n", reg.FunctionCode, reg.Register, reg.Words, err)
 				continue
 			}
 			// writeValue: float64 for numeric types, string for STR/UTF8/HEX.
@@ -166,66 +169,66 @@ func pollDevice(dev internal.Device, ts time.Time) ([]sample, error) {
 			switch reg.Datatype {
 			case "U8":
 				v := float64(internal.U8(decodedResp)) * reg.Gain
-				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 				writeValue = v
 
 			case "U16":
 				v := float64(internal.U16(decodedResp)) * reg.Gain
-				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 				writeValue = v
 
 			case "S16":
 				v := float64(internal.S16(decodedResp)) * reg.Gain
-				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 				writeValue = v
 
 			case "U32":
 				v := float64(internal.U32(decodedResp)) * reg.Gain
-				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 				writeValue = v
 
 			case "S32":
 				v := float64(internal.S32(decodedResp)) * reg.Gain
-				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 				writeValue = v
 
 			case "STR", "UTF8":
 				s := internal.UTF8(decodedResp)
-				fmt.Printf("    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
 				writeValue = s
 
 			case "HEX":
 				s := internal.RawHex(decodedResp)
-				fmt.Printf("    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
 				writeValue = s
 
 			case "U32LE":
 				v := float64(internal.U32LE(decodedResp)) * reg.Gain
-				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 				writeValue = v
 
 			case "S32LE":
 				v := float64(internal.S32LE(decodedResp)) * reg.Gain
-				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 				writeValue = v
 
 			case "F32BE":
 				v := float64(internal.F32BE(decodedResp)) * reg.Gain
-				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 				writeValue = v
 
 			case "U64BE":
 				v := float64(internal.U64BE(decodedResp)) * reg.Gain
-				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 				writeValue = v
 
 			case "S64BE":
 				v := float64(internal.S64BE(decodedResp)) * reg.Gain
-				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
 				writeValue = v
 
 			default:
-				log.Printf("    unknown datatype=%q at addr=%d (raw=% x)", reg.Datatype, reg.Register, resp)
+				fmt.Fprintf(&out, "    unknown datatype=%q at addr=%d (raw=% x)\n", reg.Datatype, reg.Register, resp)
 				continue
 			}
 
@@ -241,10 +244,10 @@ func pollDevice(dev internal.Device, ts time.Time) ([]sample, error) {
 
 	// Close TCP once all slaves for this device have been processed.
 	if err := handler.Close(); err != nil {
-		log.Printf("close error for device %s: %v", dev.Name, err)
+		fmt.Fprintf(&out, "  ERROR: close error: %v\n", err)
 	}
 
-	return deviceSamples, nil
+	return deviceSamples, out.String(), nil
 }
 
 func main() {
@@ -330,37 +333,46 @@ func main() {
 	samples := make([]sample, 0, 1024)
 
 	type devicePollResult struct {
+		index            int
 		deviceName       string
 		failRunOnFailure bool
 		samples          []sample
+		output           string
 		err              error
 	}
 
+	fmt.Printf("Processing %d devices concurrently...\n", len(devices.Devices))
 	results := make(chan devicePollResult, len(devices.Devices))
 	var wg sync.WaitGroup
-	for _, devItem := range devices.Devices {
+	for idx, devItem := range devices.Devices {
 		dev := devItem.Device
 		wg.Add(1)
-		go func(dev internal.Device) {
+		go func(idx int, dev internal.Device) {
 			defer wg.Done()
 
-			deviceSamples, err := pollDevice(dev, ts)
-			if err != nil {
-				log.Printf("Device %s: %v", dev.Name, err)
-			}
+			deviceSamples, output, err := pollDevice(dev, ts)
 			results <- devicePollResult{
+				index:            idx,
 				deviceName:       dev.Name,
 				failRunOnFailure: internal.ShouldFailRunOnDeviceFailure(dev),
 				samples:          deviceSamples,
+				output:           output,
 				err:              err,
 			}
-		}(dev)
+		}(idx, dev)
 	}
 	wg.Wait()
 	close(results)
 
 	failRunErrors := make([]string, 0, 4)
+	orderedResults := make([]devicePollResult, len(devices.Devices))
 	for res := range results {
+		orderedResults[res.index] = res
+	}
+	for _, res := range orderedResults {
+		if strings.TrimSpace(res.output) != "" {
+			fmt.Print(res.output)
+		}
 		samples = append(samples, res.samples...)
 		if res.err != nil && res.failRunOnFailure {
 			failRunErrors = append(failRunErrors, fmt.Sprintf("%s (%v)", res.deviceName, res.err))
