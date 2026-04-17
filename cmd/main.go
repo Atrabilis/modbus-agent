@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atrabilis/modbus-agent/internal"
@@ -116,6 +117,136 @@ func copyInterfaceMap(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
+func pollDevice(dev internal.Device, ts time.Time) ([]sample, error) {
+	fmt.Println("Device:", dev.Name)
+
+	addr := dev.IP + ":" + strconv.Itoa(dev.Port)
+	handler := modbus.NewTCPClientHandler(addr)
+	handler.Timeout = 5 * time.Second
+
+	if err := handler.Connect(); err != nil {
+		return nil, fmt.Errorf("unable to connect to Modbus endpoint %s: %w", addr, err)
+	}
+
+	client := modbus.NewClient(handler)
+	if !internal.RunDeviceHealthcheck(dev, handler, client) {
+		if err := handler.Close(); err != nil {
+			log.Printf("close error for device %s after healthcheck failure: %v", dev.Name, err)
+		}
+		return nil, fmt.Errorf("healthcheck failed; skipping polling")
+	}
+
+	deviceSamples := make([]sample, 0, 256)
+	for _, slave := range dev.Slaves {
+		fmt.Println("  Slave:", slave.Name)
+		handler.SlaveId = byte(slave.SlaveID)
+
+		for _, reg := range slave.Registers {
+			resp, err := internal.ReadRegisters(client, reg, slave.Offset)
+			if err != nil {
+				log.Printf("    read err fc=%d addr=%d words=%d: %v", reg.FunctionCode, reg.Register, reg.Words, err)
+				continue
+			}
+			want := internal.ExpectedResponseBytes(reg)
+			if len(resp) != want {
+				log.Printf("    unexpected length at addr=%d: got=%d want=%d", reg.Register, len(resp), want)
+				continue
+			}
+			if reg.Name == "" {
+				log.Printf("    register at addr=%d has empty name; skipping", reg.Register)
+				continue
+			}
+			decodedResp, err := internal.DecodeResponseBytes(reg, resp)
+			if err != nil {
+				log.Printf("    decode err fc=%d addr=%d words=%d: %v", reg.FunctionCode, reg.Register, reg.Words, err)
+				continue
+			}
+			// writeValue: float64 for numeric types, string for STR/UTF8/HEX.
+			var writeValue interface{}
+			switch reg.Datatype {
+			case "U8":
+				v := float64(internal.U8(decodedResp)) * reg.Gain
+				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				writeValue = v
+
+			case "U16":
+				v := float64(internal.U16(decodedResp)) * reg.Gain
+				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				writeValue = v
+
+			case "S16":
+				v := float64(internal.S16(decodedResp)) * reg.Gain
+				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				writeValue = v
+
+			case "U32":
+				v := float64(internal.U32(decodedResp)) * reg.Gain
+				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				writeValue = v
+
+			case "S32":
+				v := float64(internal.S32(decodedResp)) * reg.Gain
+				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				writeValue = v
+
+			case "STR", "UTF8":
+				s := internal.UTF8(decodedResp)
+				fmt.Printf("    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
+				writeValue = s
+
+			case "HEX":
+				s := internal.RawHex(decodedResp)
+				fmt.Printf("    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
+				writeValue = s
+
+			case "U32LE":
+				v := float64(internal.U32LE(decodedResp)) * reg.Gain
+				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				writeValue = v
+
+			case "S32LE":
+				v := float64(internal.S32LE(decodedResp)) * reg.Gain
+				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				writeValue = v
+
+			case "F32BE":
+				v := float64(internal.F32BE(decodedResp)) * reg.Gain
+				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				writeValue = v
+
+			case "U64BE":
+				v := float64(internal.U64BE(decodedResp)) * reg.Gain
+				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				writeValue = v
+
+			case "S64BE":
+				v := float64(internal.S64BE(decodedResp)) * reg.Gain
+				fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+				writeValue = v
+
+			default:
+				log.Printf("    unknown datatype=%q at addr=%d (raw=% x)", reg.Datatype, reg.Register, resp)
+				continue
+			}
+
+			// One sample per register. raw_<name> is kept for backends that use raw telemetry.
+			tags := internal.MergeTags(&dev, &slave, &reg)
+			fields := map[string]interface{}{
+				reg.Name:          writeValue,
+				"raw_" + reg.Name: internal.RawHex(resp),
+			}
+			deviceSamples = append(deviceSamples, sample{Tags: tags, Fields: fields, Timestamp: ts})
+		}
+	}
+
+	// Close TCP once all slaves for this device have been processed.
+	if err := handler.Close(); err != nil {
+		log.Printf("close error for device %s: %v", dev.Name, err)
+	}
+
+	return deviceSamples, nil
+}
+
 func main() {
 	// Stage 0: bootstrap (flags, environment, and execution timing).
 	fmt.Println("Time of execution:", time.Now().UTC().Format("2006-01-02 15:04:05"))
@@ -198,141 +329,45 @@ func main() {
 	// Stage 3: connect, run optional healthchecks, read/decode Modbus data, and accumulate samples.
 	samples := make([]sample, 0, 1024)
 
+	type devicePollResult struct {
+		deviceName       string
+		failRunOnFailure bool
+		samples          []sample
+		err              error
+	}
+
+	results := make(chan devicePollResult, len(devices.Devices))
+	var wg sync.WaitGroup
 	for _, devItem := range devices.Devices {
 		dev := devItem.Device
-		fmt.Println("Device:", dev.Name)
-		failRunOnFailure := internal.ShouldFailRunOnDeviceFailure(dev)
+		wg.Add(1)
+		go func(dev internal.Device) {
+			defer wg.Done()
 
-		addr := dev.IP + ":" + strconv.Itoa(dev.Port)
-		handler := modbus.NewTCPClientHandler(addr)
-		handler.Timeout = 5 * time.Second
-
-		if err := handler.Connect(); err != nil {
-			log.Printf("Device %s: unable to connect to Modbus endpoint %s: %v", dev.Name, addr, err)
-			if failRunOnFailure {
-				log.Fatalf("Device %s failed and healthcheck.on_fail=fail_run", dev.Name)
+			deviceSamples, err := pollDevice(dev, ts)
+			if err != nil {
+				log.Printf("Device %s: %v", dev.Name, err)
 			}
-			continue
-		}
-		client := modbus.NewClient(handler)
-		if !internal.RunDeviceHealthcheck(dev, handler, client) {
-			if err := handler.Close(); err != nil {
-				log.Printf("close error for device %s after healthcheck failure: %v", dev.Name, err)
+			results <- devicePollResult{
+				deviceName:       dev.Name,
+				failRunOnFailure: internal.ShouldFailRunOnDeviceFailure(dev),
+				samples:          deviceSamples,
+				err:              err,
 			}
-			if failRunOnFailure {
-				log.Fatalf("Device %s failed healthcheck and healthcheck.on_fail=fail_run", dev.Name)
-			}
-			log.Printf("Device %s: skipping polling because healthcheck failed", dev.Name)
-			continue
+		}(dev)
+	}
+	wg.Wait()
+	close(results)
+
+	failRunErrors := make([]string, 0, 4)
+	for res := range results {
+		samples = append(samples, res.samples...)
+		if res.err != nil && res.failRunOnFailure {
+			failRunErrors = append(failRunErrors, fmt.Sprintf("%s (%v)", res.deviceName, res.err))
 		}
-
-		for _, slave := range dev.Slaves {
-			fmt.Println("  Slave:", slave.Name)
-			handler.SlaveId = byte(slave.SlaveID)
-
-			for _, reg := range slave.Registers {
-				resp, err := internal.ReadRegisters(client, reg, slave.Offset)
-				if err != nil {
-					log.Printf("    read err fc=%d addr=%d words=%d: %v", reg.FunctionCode, reg.Register, reg.Words, err)
-					continue
-				}
-				want := internal.ExpectedResponseBytes(reg)
-				if len(resp) != want {
-					log.Printf("    unexpected length at addr=%d: got=%d want=%d", reg.Register, len(resp), want)
-					continue
-				}
-				if reg.Name == "" {
-					log.Printf("    register at addr=%d has empty name; skipping", reg.Register)
-					continue
-				}
-				decodedResp, err := internal.DecodeResponseBytes(reg, resp)
-				if err != nil {
-					log.Printf("    decode err fc=%d addr=%d words=%d: %v", reg.FunctionCode, reg.Register, reg.Words, err)
-					continue
-				}
-				// writeValue: float64 for numeric types, string for STR/UTF8/HEX.
-				var writeValue interface{}
-				switch reg.Datatype {
-				case "U8":
-					v := float64(internal.U8(decodedResp)) * reg.Gain
-					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-					writeValue = v
-
-				case "U16":
-					v := float64(internal.U16(decodedResp)) * reg.Gain
-					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-					writeValue = v
-
-				case "S16":
-					v := float64(internal.S16(decodedResp)) * reg.Gain
-					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-					writeValue = v
-
-				case "U32":
-					v := float64(internal.U32(decodedResp)) * reg.Gain
-					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-					writeValue = v
-
-				case "S32":
-					v := float64(internal.S32(decodedResp)) * reg.Gain
-					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-					writeValue = v
-
-				case "STR", "UTF8":
-					s := internal.UTF8(decodedResp)
-					fmt.Printf("    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
-					writeValue = s
-
-				case "HEX":
-					s := internal.RawHex(decodedResp)
-					fmt.Printf("    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
-					writeValue = s
-
-				case "U32LE":
-					v := float64(internal.U32LE(decodedResp)) * reg.Gain
-					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-					writeValue = v
-
-				case "S32LE":
-					v := float64(internal.S32LE(decodedResp)) * reg.Gain
-					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-					writeValue = v
-
-				case "F32BE":
-					v := float64(internal.F32BE(decodedResp)) * reg.Gain
-					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-					writeValue = v
-
-				case "U64BE":
-					v := float64(internal.U64BE(decodedResp)) * reg.Gain
-					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-					writeValue = v
-
-				case "S64BE":
-					v := float64(internal.S64BE(decodedResp)) * reg.Gain
-					fmt.Printf("    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-					writeValue = v
-
-				default:
-					log.Printf("    unknown datatype=%q at addr=%d (raw=% x)", reg.Datatype, reg.Register, resp)
-					continue
-				}
-
-				// One sample per register. raw_<name> is kept for backends that use raw telemetry.
-				tags := internal.MergeTags(&dev, &slave, &reg)
-				fields := map[string]interface{}{
-					reg.Name:          writeValue,
-					"raw_" + reg.Name: internal.RawHex(resp),
-				}
-				samples = append(samples, sample{Tags: tags, Fields: fields, Timestamp: ts})
-			}
-		}
-
-		// Close TCP once all slaves for this device have been processed.
-		if err := handler.Close(); err != nil {
-			log.Printf("close error for device %s: %v", dev.Name, err)
-		}
-
+	}
+	if len(failRunErrors) > 0 {
+		log.Fatalf("Device failures with healthcheck.on_fail=fail_run: %s", strings.Join(failRunErrors, "; "))
 	}
 
 	// Stage 4: dispatch accumulated samples to each configured output.
