@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,8 @@ type sample struct {
 	Fields    map[string]interface{}
 	Timestamp time.Time
 }
+
+const timescaleWriteWorkers = 8
 
 func aggregateSamplesForTimescale(samples []sample) []sample {
 	rowsByKey := make(map[string]*sample, len(samples))
@@ -115,6 +118,41 @@ func copyInterfaceMap(in map[string]interface{}) map[string]interface{} {
 		out[k] = v
 	}
 	return out
+}
+
+func writeSamplesWithWorkers(w storageWriter, rows []sample, workers int) {
+	if len(rows) == 0 {
+		return
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(rows) {
+		workers = len(rows)
+	}
+	if workers == 1 {
+		for _, s := range rows {
+			w.Write(s.Tags, s.Fields, s.Timestamp)
+		}
+		return
+	}
+
+	jobs := make(chan sample, workers*2)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for s := range jobs {
+				w.Write(s.Tags, s.Fields, s.Timestamp)
+			}
+		}()
+	}
+	for _, s := range rows {
+		jobs <- s
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 func pollDevice(dev internal.Device, ts time.Time) ([]sample, string, error) {
@@ -404,10 +442,19 @@ func main() {
 					timescaleRowsReady = true
 					fmt.Printf("Timescale row aggregation: %d samples -> %d row upserts (%s)\n", len(samples), len(timescaleRows), time.Since(aggBegin))
 				}
-				writeBegin := time.Now()
-				for _, s := range timescaleRows {
-					w.Write(s.Tags, s.Fields, s.Timestamp)
+				workers := runtime.GOMAXPROCS(0)
+				if workers > timescaleWriteWorkers {
+					workers = timescaleWriteWorkers
 				}
+				if workers > len(timescaleRows) {
+					workers = len(timescaleRows)
+				}
+				if workers < 1 {
+					workers = 1
+				}
+				fmt.Printf("Timescale write workers: %d\n", workers)
+				writeBegin := time.Now()
+				writeSamplesWithWorkers(w, timescaleRows, workers)
 				writeDuration := time.Since(writeBegin)
 				flushBegin := time.Now()
 				w.Flush()

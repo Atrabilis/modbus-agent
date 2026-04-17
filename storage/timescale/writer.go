@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -33,6 +34,7 @@ type Writer struct {
 	pool         *pgxpool.Pool
 	knownColumns map[string]struct{}
 	warnedIgnore map[string]struct{}
+	mu           sync.RWMutex
 }
 
 func NewWriter(name string, cfg Config) (*Writer, error) {
@@ -245,7 +247,9 @@ func (w *Writer) refreshKnownColumns(ctx context.Context) error {
 	if len(known) == 0 {
 		return fmt.Errorf("table %s has no visible columns", w.fqn)
 	}
+	w.mu.Lock()
 	w.knownColumns = known
+	w.mu.Unlock()
 	return nil
 }
 
@@ -253,15 +257,18 @@ func (w *Writer) filterKnownColumns(in []namedValue) []namedValue {
 	if len(in) == 0 {
 		return in
 	}
+	w.mu.RLock()
+	known := w.knownColumns
+	w.mu.RUnlock()
 	// If we don't have a cached schema yet, keep current behavior (best effort).
-	if len(w.knownColumns) == 0 {
+	if len(known) == 0 {
 		return in
 	}
 
 	out := make([]namedValue, 0, len(in))
 	for _, c := range in {
 		key := strings.ToLower(strings.TrimSpace(c.Name))
-		if _, ok := w.knownColumns[key]; ok {
+		if _, ok := known[key]; ok {
 			out = append(out, c)
 			continue
 		}
@@ -278,6 +285,8 @@ func (w *Writer) warnIgnoredColumn(columnName string) {
 	if key == "" {
 		return
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if _, seen := w.warnedIgnore[key]; seen {
 		return
 	}
