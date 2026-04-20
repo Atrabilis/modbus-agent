@@ -2,6 +2,7 @@ package timescale
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	agentinternal "github.com/atrabilis/modbus-agent/internal"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -134,18 +136,28 @@ func (w *Writer) Write(tags map[string]string, fields map[string]interface{}, ts
 		return
 	}
 
-	tagColumns := collectTagColumns(tags)
+	seriesKey, flagsMap := agentinternal.BuildSeriesMetadata(tags)
+	flagsJSON, err := json.Marshal(flagsMap)
+	if err != nil {
+		fmt.Printf("Warning writing to storage output %q (type=%s): could not encode flags as JSON: %v\n", w.name, backendType, err)
+		flagsJSON = []byte("{}")
+	}
+
+	metaColumns := []namedValue{
+		{Name: "series_key", Value: seriesKey},
+		{Name: "flags", Value: json.RawMessage(flagsJSON)},
+	}
 	fieldColumns := collectFieldColumns(fields)
 
-	tagColumns = w.filterKnownColumns(tagColumns)
+	metaColumns = w.filterKnownColumns(metaColumns)
 	fieldColumns = w.filterKnownColumns(fieldColumns)
 
 	if len(fieldColumns) == 0 {
 		return
 	}
 
-	columns := make([]string, 0, 4+len(tagColumns)+len(fieldColumns))
-	args := make([]interface{}, 0, 4+len(tagColumns)+len(fieldColumns))
+	columns := make([]string, 0, 4+len(metaColumns)+len(fieldColumns))
+	args := make([]interface{}, 0, 4+len(metaColumns)+len(fieldColumns))
 
 	columns = append(columns, "ts", "device_name", "slave_name", "slave_id")
 	args = append(args, ts.UTC(), deviceName, slaveName, slaveID)
@@ -157,10 +169,10 @@ func (w *Writer) Write(tags map[string]string, fields map[string]interface{}, ts
 		"slave_id":    1,
 	}
 
-	tagColNames := make([]string, 0, len(tagColumns))
-	for _, c := range tagColumns {
+	metaColNames := make([]string, 0, len(metaColumns))
+	for _, c := range metaColumns {
 		name := makeUnique(c.Name, baseUsed)
-		tagColNames = append(tagColNames, name)
+		metaColNames = append(metaColNames, name)
 		columns = append(columns, name)
 		args = append(args, c.Value)
 	}
@@ -178,20 +190,26 @@ func (w *Writer) Write(tags map[string]string, fields map[string]interface{}, ts
 		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
 	}
 
-	updateSet := make([]string, 0, 1+len(tagColNames)+len(fieldColNames))
+	updateSet := make([]string, 0, 1+len(metaColNames)+len(fieldColNames))
 	updateSet = append(updateSet, "slave_id = EXCLUDED.slave_id")
-	for _, c := range tagColNames {
+	for _, c := range metaColNames {
 		updateSet = append(updateSet, c+" = EXCLUDED."+c)
 	}
 	for _, c := range fieldColNames {
 		updateSet = append(updateSet, c+" = EXCLUDED."+c)
 	}
 
+	conflictCols := []string{"ts", "device_name", "slave_name"}
+	if w.hasKnownColumn("series_key") {
+		conflictCols = append(conflictCols, "series_key")
+	}
+
 	query := fmt.Sprintf(
-		"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (ts, device_name, slave_name) DO UPDATE SET %s",
+		"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET %s",
 		w.fqn,
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "),
+		strings.Join(conflictCols, ", "),
 		strings.Join(updateSet, ", "),
 	)
 
@@ -277,6 +295,24 @@ func (w *Writer) filterKnownColumns(in []namedValue) []namedValue {
 	return out
 }
 
+func (w *Writer) hasKnownColumn(columnName string) bool {
+	if w == nil {
+		return false
+	}
+	key := strings.ToLower(strings.TrimSpace(columnName))
+	if key == "" {
+		return false
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	// If schema cache is unavailable, optimistically assume the column exists.
+	if len(w.knownColumns) == 0 {
+		return true
+	}
+	_, ok := w.knownColumns[key]
+	return ok
+}
+
 func (w *Writer) warnIgnoredColumn(columnName string) {
 	if w == nil {
 		return
@@ -297,34 +333,6 @@ func (w *Writer) warnIgnoredColumn(columnName string) {
 type namedValue struct {
 	Name  string
 	Value interface{}
-}
-
-func collectTagColumns(tags map[string]string) []namedValue {
-	if len(tags) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(tags))
-	for k := range tags {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	out := make([]namedValue, 0, len(keys))
-	for _, k := range keys {
-		v := strings.TrimSpace(tags[k])
-		if v == "" {
-			continue
-		}
-		if shouldSkipTagKey(k) {
-			continue
-		}
-		name := normalizeTagColumnName(k)
-		if name == "" {
-			continue
-		}
-		out = append(out, namedValue{Name: name, Value: v})
-	}
-	return out
 }
 
 func collectFieldColumns(fields map[string]interface{}) []namedValue {
@@ -365,25 +373,6 @@ func normalizeValue(v interface{}) interface{} {
 
 func isWholeNumber(v float64) bool {
 	return math.Abs(v-math.Round(v)) < 1e-9
-}
-
-func shouldSkipTagKey(tagKey string) bool {
-	switch strings.ToLower(strings.TrimSpace(tagKey)) {
-	case "ts", "device", "device_name", "slave", "slave_name", "slave_id", "unit":
-		return true
-	default:
-		return false
-	}
-}
-
-func normalizeTagColumnName(tagKey string) string {
-	key := strings.ToLower(strings.TrimSpace(tagKey))
-	switch key {
-	case "ip":
-		return "ip_address"
-	default:
-		return sanitizeIdentifier(key)
-	}
 }
 
 func sanitizeIdentifier(s string) string {

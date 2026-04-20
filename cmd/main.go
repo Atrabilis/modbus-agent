@@ -52,7 +52,8 @@ func aggregateSamplesForTimescale(samples []sample) []sample {
 		// Keep malformed samples isolated so writer warnings remain visible.
 		key := fmt.Sprintf("invalid:%d", i)
 		if deviceName != "" && slaveName != "" {
-			key = fmt.Sprintf("%s|%s|%s", s.Timestamp.UTC().Format(time.RFC3339Nano), deviceName, slaveName)
+			seriesKey, _ := internal.BuildSeriesMetadata(s.Tags)
+			key = fmt.Sprintf("%s|%s|%s|%s", s.Timestamp.UTC().Format(time.RFC3339Nano), deviceName, slaveName, seriesKey)
 		}
 
 		existing, ok := rowsByKey[key]
