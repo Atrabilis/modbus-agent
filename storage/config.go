@@ -16,11 +16,12 @@ type Config struct {
 }
 
 type OutputConfig struct {
-	Name        string            `yaml:"name"`
-	Type        string            `yaml:"type"`
-	Enabled     *bool             `yaml:"enabled,omitempty"`
-	Influxdb2   Influxdb2Config   `yaml:"influxdb2,omitempty"`
-	Timescaledb TimescaledbConfig `yaml:"timescaledb,omitempty"`
+	Name              string                  `yaml:"name"`
+	Type              string                  `yaml:"type"`
+	Enabled           *bool                   `yaml:"enabled,omitempty"`
+	Influxdb2         Influxdb2Config         `yaml:"influxdb2,omitempty"`
+	Timescaledb       TimescaledbConfig       `yaml:"timescaledb,omitempty"`
+	TimescaledbShadow TimescaledbShadowConfig `yaml:"timescaledb_shadow,omitempty"`
 }
 
 type Influxdb2Config struct {
@@ -32,6 +33,16 @@ type Influxdb2Config struct {
 }
 
 type TimescaledbConfig struct {
+	HostEnv     string `yaml:"host_env"`
+	PortEnv     string `yaml:"port_env"`
+	UserEnv     string `yaml:"user_env"`
+	PasswordEnv string `yaml:"password_env"`
+	DatabaseEnv string `yaml:"database_env"`
+	Schema      string `yaml:"schema"`
+	Table       string `yaml:"table"`
+}
+
+type TimescaledbShadowConfig struct {
 	HostEnv     string `yaml:"host_env"`
 	PortEnv     string `yaml:"port_env"`
 	UserEnv     string `yaml:"user_env"`

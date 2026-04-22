@@ -12,6 +12,7 @@ import (
 )
 
 type Devices struct {
+	Plant   string       `yaml:"plant"`
 	Devices []DeviceItem `yaml:"devices"`
 }
 
@@ -290,10 +291,10 @@ func RawHex(b []byte) string {
 }
 
 // MergeTags builds the merged tag map from device, slave, and register tags (YAML).
-// Order: device < slave < register. Then defaults: device_name/slave_name/slave_id, unit from register.Unit,
+// Order: device < slave < register. Then defaults: plant, device_name/slave_name/slave_id, unit from register.Unit,
 // backward-compatible aliases device/slave, and legacy flags (module_number, module_label) if set.
 // All tag values are strings.
-func MergeTags(dev *Device, slave *Slave, reg *Register) map[string]string {
+func MergeTags(plant string, dev *Device, slave *Slave, reg *Register) map[string]string {
 	out := make(map[string]string)
 	for k, v := range dev.Tags {
 		out[k] = v
@@ -303,6 +304,9 @@ func MergeTags(dev *Device, slave *Slave, reg *Register) map[string]string {
 	}
 	for k, v := range reg.Tags {
 		out[k] = v
+	}
+	if out["plant"] == "" && strings.TrimSpace(plant) != "" {
+		out["plant"] = strings.TrimSpace(plant)
 	}
 	// Canonical identifiers used by Timescale writer.
 	if out["device_name"] == "" && dev.Name != "" {

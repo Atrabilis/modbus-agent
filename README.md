@@ -10,12 +10,13 @@ El agente:
 2. Genera samples (tags + fields).
 3. Recorre `storage.outputs` y escribe en cada backend habilitado según `type`.
 
-Esto permite enviar el mismo ciclo de lectura a varios destinos (por ejemplo, `influxdb2` y `timescaledb`) en paralelo lógico.
+Esto permite enviar el mismo ciclo de lectura a varios destinos (por ejemplo, `influxdb2`, `timescaledb` y `timescaledb_shadow`) en paralelo lógico.
 
 ## Backends soportados
 
 - `influxdb2`
 - `timescaledb`
+- `timescaledb_shadow`
 
 ## Comportamiento TimescaleDB
 
@@ -55,10 +56,24 @@ El writer siempre usa `INSERT INTO tabla (col1, col2, ...) VALUES (...)`, por lo
 ### Campos/tags normalizados
 
 - Tags requeridos para Timescale: `device_name`, `slave_name`, `slave_id`.
+- Si existe `plant:` en la raíz del YAML, se propaga como tag `plant` (salvo override por tags más específicos).
 - Compatibilidad legacy en tags: `device`, `slave` se mantienen como alias.
 - `ip` se mapea a `ip_address`.
 - `unit` se omite como columna SQL.
 - Campos `raw_*` se omiten para Timescale.
+
+## Comportamiento Timescale Shadow
+
+El backend `timescaledb_shadow` escribe una fila por `plant + device_name + slave_name + ts` con:
+
+- columnas fijas: `plant`, `ts`, `device_name`, `slave_name`
+- `payload` JSONB con:
+  - `slave_id`
+  - `series_key`
+  - `flags`
+  - `fields` (campos no-raw normalizados)
+
+La idea es usar esta tabla como transporte compacto del payload que luego se proyecta a la tabla estructurada.
 
 ## Configuración YAML (resumen)
 
@@ -84,6 +99,24 @@ storage:
         database_env: "TIMESCALE_DB_LOCAL"
         schema: "lalcktur"
         table: "ktl_inverters"
+```
+
+### Ejemplo `timescaledb_shadow`
+
+```yaml
+storage:
+  outputs:
+    - name: "local_shadow"
+      type: "timescaledb_shadow"
+      enabled: true
+      timescaledb_shadow:
+        host_env: "TIMESCALE_HOST_LOCAL"
+        port_env: "TIMESCALE_PORT_LOCAL"
+        user_env: "TIMESCALE_USER_LOCAL"
+        password_env: "TIMESCALE_PASSWORD_LOCAL"
+        database_env: "TIMESCALE_DB_LOCAL"
+        schema: "landing"
+        table: "diris_i35_shadow"
 ```
 
 ## Ejecución

@@ -14,6 +14,7 @@ import (
 	"github.com/atrabilis/modbus-agent/storage"
 	"github.com/atrabilis/modbus-agent/storage/influx"
 	"github.com/atrabilis/modbus-agent/storage/timescale"
+	"github.com/atrabilis/modbus-agent/storage/timescale_shadow"
 
 	"github.com/goburrow/modbus"
 	dotenv "github.com/joho/godotenv"
@@ -156,7 +157,16 @@ func writeSamplesWithWorkers(w storageWriter, rows []sample, workers int) {
 	wg.Wait()
 }
 
-func pollDevice(dev internal.Device, ts time.Time) ([]sample, string, error) {
+func isTimescaleLikeWriter(w storageWriter) bool {
+	switch w.(type) {
+	case *timescale.Writer, *timescale_shadow.Writer:
+		return true
+	default:
+		return false
+	}
+}
+
+func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, string, error) {
 	var out strings.Builder
 	fmt.Fprintf(&out, "Device: %s\n", dev.Name)
 
@@ -272,7 +282,7 @@ func pollDevice(dev internal.Device, ts time.Time) ([]sample, string, error) {
 			}
 
 			// One sample per register. raw_<name> is kept for backends that use raw telemetry.
-			tags := internal.MergeTags(&dev, &slave, &reg)
+			tags := internal.MergeTags(plant, &dev, &slave, &reg)
 			fields := map[string]interface{}{
 				reg.Name:          writeValue,
 				"raw_" + reg.Name: internal.RawHex(resp),
@@ -353,6 +363,20 @@ func main() {
 					log.Fatalf("Error initializing storage output %q: %v", output.Name, err)
 				}
 				writers = append(writers, w)
+			case "timescaledb_shadow":
+				w, err := timescale_shadow.NewWriter(output.Name, timescale_shadow.Config{
+					HostEnv:     output.TimescaledbShadow.HostEnv,
+					PortEnv:     output.TimescaledbShadow.PortEnv,
+					UserEnv:     output.TimescaledbShadow.UserEnv,
+					PasswordEnv: output.TimescaledbShadow.PasswordEnv,
+					DatabaseEnv: output.TimescaledbShadow.DatabaseEnv,
+					Schema:      output.TimescaledbShadow.Schema,
+					Table:       output.TimescaledbShadow.Table,
+				})
+				if err != nil {
+					log.Fatalf("Error initializing storage output %q: %v", output.Name, err)
+				}
+				writers = append(writers, w)
 			default:
 				log.Fatalf("Unsupported storage output type %q at storage.outputs[%d]", output.Type, i)
 			}
@@ -386,10 +410,10 @@ func main() {
 	for idx, devItem := range devices.Devices {
 		dev := devItem.Device
 		wg.Add(1)
-		go func(idx int, dev internal.Device) {
+		go func(idx int, plant string, dev internal.Device) {
 			defer wg.Done()
 
-			deviceSamples, output, err := pollDevice(dev, ts)
+			deviceSamples, output, err := pollDevice(plant, dev, ts)
 			results <- devicePollResult{
 				index:            idx,
 				deviceName:       dev.Name,
@@ -398,7 +422,7 @@ func main() {
 				output:           output,
 				err:              err,
 			}
-		}(idx, dev)
+		}(idx, devices.Plant, dev)
 	}
 	wg.Wait()
 	close(results)
@@ -436,7 +460,7 @@ func main() {
 			}
 			fmt.Printf("Writing to output: %s\n", w.Name())
 
-			if _, isTimescale := w.(*timescale.Writer); isTimescale {
+			if isTimescaleLikeWriter(w) {
 				if !timescaleRowsReady {
 					aggBegin := time.Now()
 					timescaleRows = aggregateSamplesForTimescale(samples)
