@@ -3,6 +3,7 @@ package timescale_shadow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -11,9 +12,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	agentinternal "github.com/atrabilis/modbus-agent/internal"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,6 +34,9 @@ type Writer struct {
 	fqn    string
 
 	pool *pgxpool.Pool
+
+	conflictMu          sync.RWMutex
+	conflictOnSeriesKey bool
 }
 
 func NewWriter(name string, cfg Config) (*Writer, error) {
@@ -76,11 +82,12 @@ func NewWriter(name string, cfg Config) (*Writer, error) {
 	}
 
 	w := &Writer{
-		name:   name,
-		schema: schema,
-		table:  table,
-		fqn:    schema + "." + table,
-		pool:   pool,
+		name:                name,
+		schema:              schema,
+		table:               table,
+		fqn:                 schema + "." + table,
+		pool:                pool,
+		conflictOnSeriesKey: true,
 	}
 
 	if err := pool.Ping(context.Background()); err != nil {
@@ -146,12 +153,39 @@ func (w *Writer) Write(tags map[string]string, fields map[string]interface{}, ts
 		return
 	}
 
-	query := fmt.Sprintf(
-		"INSERT INTO %s (plant, ts, device_name, slave_name, payload) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (plant, device_name, slave_name, ts) DO UPDATE SET payload = EXCLUDED.payload, ingested_at = now()",
-		w.fqn,
-	)
-	if _, err := w.pool.Exec(context.Background(), query, plant, ts.UTC(), deviceName, slaveName, json.RawMessage(payloadJSON)); err != nil {
+	useSeriesConflict := w.currentConflictOnSeriesKey()
+	err = w.execUpsert(context.Background(), plant, ts.UTC(), deviceName, slaveName, json.RawMessage(payloadJSON), useSeriesConflict)
+	if err == nil {
+		return
+	}
+
+	if !isRetryableConflictTargetErr(err) {
 		fmt.Printf("Error writing to storage output %q (type=%s): %v\n", w.name, backendType, err)
+		return
+	}
+
+	alternateConflict := !useSeriesConflict
+	alternateErr := w.execUpsert(context.Background(), plant, ts.UTC(), deviceName, slaveName, json.RawMessage(payloadJSON), alternateConflict)
+	if alternateErr != nil {
+		fmt.Printf("Error writing to storage output %q (type=%s): %v (fallback: %v)\n", w.name, backendType, err, alternateErr)
+		return
+	}
+
+	if w.setConflictOnSeriesKey(alternateConflict) {
+		switch {
+		case alternateConflict:
+			fmt.Printf(
+				"Warning writing to storage output %q (type=%s): switched ON CONFLICT target to include series_key\n",
+				w.name,
+				backendType,
+			)
+		default:
+			fmt.Printf(
+				"Warning writing to storage output %q (type=%s): switched ON CONFLICT target to legacy key without series_key\n",
+				w.name,
+				backendType,
+			)
+		}
 	}
 }
 
@@ -266,4 +300,77 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func (w *Writer) currentConflictOnSeriesKey() bool {
+	if w == nil {
+		return true
+	}
+	w.conflictMu.RLock()
+	defer w.conflictMu.RUnlock()
+	return w.conflictOnSeriesKey
+}
+
+func (w *Writer) setConflictOnSeriesKey(v bool) bool {
+	if w == nil {
+		return false
+	}
+	w.conflictMu.Lock()
+	defer w.conflictMu.Unlock()
+	if w.conflictOnSeriesKey == v {
+		return false
+	}
+	w.conflictOnSeriesKey = v
+	return true
+}
+
+func (w *Writer) execUpsert(
+	ctx context.Context,
+	plant string,
+	ts time.Time,
+	deviceName string,
+	slaveName string,
+	payload json.RawMessage,
+	conflictOnSeriesKey bool,
+) error {
+	if w == nil || w.pool == nil {
+		return nil
+	}
+	conflictCols := "plant, device_name, slave_name, ts"
+	if conflictOnSeriesKey {
+		conflictCols += ", series_key"
+	}
+	query := fmt.Sprintf(
+		"INSERT INTO %s (plant, ts, device_name, slave_name, payload) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (%s) DO UPDATE SET payload = EXCLUDED.payload, ingested_at = now()",
+		w.fqn,
+		conflictCols,
+	)
+	_, err := w.pool.Exec(ctx, query, plant, ts, deviceName, slaveName, payload)
+	return err
+}
+
+func isRetryableConflictTargetErr(err error) bool {
+	return isNoMatchingConflictConstraintErr(err) || isUndefinedColumnErr(err)
+}
+
+func isNoMatchingConflictConstraintErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "42P10"
+	}
+	return false
+}
+
+func isUndefinedColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "42703"
+	}
+	return false
 }
