@@ -154,7 +154,7 @@ func (w *Writer) Write(tags map[string]string, fields map[string]interface{}, ts
 	}
 
 	useSeriesConflict := w.currentConflictOnSeriesKey()
-	err = w.execUpsert(context.Background(), plant, ts.UTC(), deviceName, slaveName, json.RawMessage(payloadJSON), useSeriesConflict)
+	err = w.execUpsert(context.Background(), plant, ts.UTC(), deviceName, slaveName, seriesKey, json.RawMessage(payloadJSON), useSeriesConflict)
 	if err == nil {
 		return
 	}
@@ -165,7 +165,7 @@ func (w *Writer) Write(tags map[string]string, fields map[string]interface{}, ts
 	}
 
 	alternateConflict := !useSeriesConflict
-	alternateErr := w.execUpsert(context.Background(), plant, ts.UTC(), deviceName, slaveName, json.RawMessage(payloadJSON), alternateConflict)
+	alternateErr := w.execUpsert(context.Background(), plant, ts.UTC(), deviceName, slaveName, seriesKey, json.RawMessage(payloadJSON), alternateConflict)
 	if alternateErr != nil {
 		fmt.Printf("Error writing to storage output %q (type=%s): %v (fallback: %v)\n", w.name, backendType, err, alternateErr)
 		return
@@ -330,6 +330,7 @@ func (w *Writer) execUpsert(
 	ts time.Time,
 	deviceName string,
 	slaveName string,
+	seriesKey string,
 	payload json.RawMessage,
 	conflictOnSeriesKey bool,
 ) error {
@@ -337,15 +338,23 @@ func (w *Writer) execUpsert(
 		return nil
 	}
 	conflictCols := "plant, device_name, slave_name, ts"
+	insertCols := "plant, ts, device_name, slave_name, payload"
+	insertVals := "$1, $2, $3, $4, $5"
+	args := []interface{}{plant, ts, deviceName, slaveName, payload}
 	if conflictOnSeriesKey {
 		conflictCols += ", series_key"
+		insertCols = "plant, ts, device_name, slave_name, series_key, payload"
+		insertVals = "$1, $2, $3, $4, $5, $6"
+		args = []interface{}{plant, ts, deviceName, slaveName, seriesKey, payload}
 	}
 	query := fmt.Sprintf(
-		"INSERT INTO %s (plant, ts, device_name, slave_name, payload) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (%s) DO UPDATE SET payload = EXCLUDED.payload, ingested_at = now()",
+		"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) DO UPDATE SET payload = EXCLUDED.payload, ingested_at = now()",
 		w.fqn,
+		insertCols,
+		insertVals,
 		conflictCols,
 	)
-	_, err := w.pool.Exec(ctx, query, plant, ts, deviceName, slaveName, payload)
+	_, err := w.pool.Exec(ctx, query, args...)
 	return err
 }
 

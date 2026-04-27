@@ -66,7 +66,7 @@ El writer siempre usa `INSERT INTO tabla (col1, col2, ...) VALUES (...)`, por lo
 
 El backend `timescaledb_shadow` escribe una fila por `plant + device_name + slave_name + ts` con:
 
-- columnas fijas: `plant`, `ts`, `device_name`, `slave_name`
+- columnas fijas: `plant`, `ts`, `device_name`, `slave_name`, `series_key`
 - `payload` JSONB con:
   - `slave_id`
   - `series_key`
