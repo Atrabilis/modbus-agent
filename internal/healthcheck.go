@@ -19,84 +19,98 @@ func ShouldFailRunOnDeviceFailure(dev Device) bool {
 }
 
 func RunDeviceHealthcheck(dev Device, handler *modbus.TCPClientHandler, client modbusReadClient) bool {
-	if dev.Healthcheck == nil || !dev.Healthcheck.IsEnabled() {
-		return true
-	}
-
-	if len(dev.Healthcheck.Probes) == 0 {
-		log.Printf("Device %s: healthcheck is enabled but probes are empty", dev.Name)
-		return false
-	}
-
-	policy := dev.Healthcheck.SuccessPolicyMode()
-	passed := 0
-	for i, probe := range dev.Healthcheck.Probes {
-		if runHealthProbe(dev.Name, i, probe, handler, client) {
-			passed++
-			if policy == "any" {
-				log.Printf("Device %s: healthcheck passed (policy=any)", dev.Name)
-				return true
-			}
-		} else if policy == "all" {
-			log.Printf("Device %s: healthcheck failed (policy=all)", dev.Name)
-			return false
-		}
-	}
-
-	if policy == "all" {
-		log.Printf("Device %s: healthcheck passed (policy=all)", dev.Name)
-		return true
-	}
-
-	if passed > 0 {
-		log.Printf("Device %s: healthcheck passed (policy=any)", dev.Name)
-		return true
-	}
-	log.Printf("Device %s: healthcheck failed (policy=any)", dev.Name)
-	return false
+        return RunSlaveHealthcheck(dev, Slave{}, handler, client)
 }
 
-func runHealthProbe(devName string, idx int, probe HealthcheckProbe, handler *modbus.TCPClientHandler, client modbusReadClient) bool {
-	probeName := probe.Name
-	if probeName == "" {
-		probeName = fmt.Sprintf("probe_%d", idx)
-	}
-	if probe.SlaveID < 0 || probe.SlaveID > 255 {
-		log.Printf("Device %s: healthcheck %s invalid slave_id=%d", devName, probeName, probe.SlaveID)
-		return false
-	}
+func RunSlaveHealthcheck(dev Device, slave Slave, handler *modbus.TCPClientHandler, client modbusReadClient) bool {
+        if dev.Healthcheck == nil || !dev.Healthcheck.IsEnabled() {
+                return true
+        }
 
-	functionCode := probe.FunctionCode
-	if functionCode == 0 {
-		functionCode = 3
-	}
+        if len(dev.Healthcheck.Probes) == 0 {
+                log.Printf("Device %s: healthcheck is enabled but probes are empty", dev.Name)
+                return false
+        }
 
-	words := probe.Words
-	if words <= 0 {
-		words = 1
-	}
+        policy := dev.Healthcheck.SuccessPolicyMode()
+        passed := 0
+        for i, probe := range dev.Healthcheck.Probes {
+                if runHealthProbe(dev.Name, i, probe, &slave, handler, client) {
+                        passed++
+                        if policy == "any" {
+                                log.Printf("Device %s: healthcheck passed (policy=any)", dev.Name)
+                                return true
+                        }
+                } else if policy == "all" {
+                        log.Printf("Device %s: healthcheck failed (policy=all)", dev.Name)
+                        return false
+                }
+        }
 
-	attempts := probe.Retries + 1
-	if attempts < 1 {
-		attempts = 1
-	}
+        if policy == "all" {
+                log.Printf("Device %s: healthcheck passed (policy=all)", dev.Name)
+                return true
+        }
 
-	defaultTimeout := handler.Timeout
-	if probe.TimeoutMs > 0 {
-		handler.Timeout = time.Duration(probe.TimeoutMs) * time.Millisecond
-	}
-	defer func() {
-		handler.Timeout = defaultTimeout
-	}()
+        if passed > 0 {
+                log.Printf("Device %s: healthcheck passed (policy=any)", dev.Name)
+                return true
+        }
+        log.Printf("Device %s: healthcheck failed (policy=any)", dev.Name)
+        return false
+}
 
-	handler.SlaveId = byte(probe.SlaveID)
-	reg := Register{
-		Register:     probe.Register,
-		FunctionCode: functionCode,
-		Words:        words,
-	}
+func runHealthProbe(devName string, idx int, probe HealthcheckProbe, slave *Slave, handler *modbus.TCPClientHandler, client modbusReadClient) bool {
+        probeName := probe.Name
+        if probeName == "" {
+                probeName = fmt.Sprintf("probe_%d", idx)
+        }
 
-	for attempt := 1; attempt <= attempts; attempt++ {
+        effectiveSlaveID := probe.SlaveID
+        if effectiveSlaveID == 0 && slave != nil && slave.SlaveID != 0 {
+                effectiveSlaveID = slave.SlaveID
+        }
+        if effectiveSlaveID < 0 || effectiveSlaveID > 255 {
+                log.Printf("Device %s: healthcheck %s invalid slave_id=%d", devName, probeName, effectiveSlaveID)
+                return false
+        }
+
+        functionCode := probe.FunctionCode
+        if functionCode == 0 {
+                functionCode = 3
+        }
+
+        words := probe.Words
+        if words <= 0 {
+                words = 1
+        }
+
+        attempts := probe.Retries + 1
+        if attempts < 1 {
+                attempts = 1
+        }
+
+        defaultTimeout := handler.Timeout
+        if probe.TimeoutMs > 0 {
+                handler.Timeout = time.Duration(probe.TimeoutMs) * time.Millisecond
+        }
+        defer func() {
+                handler.Timeout = defaultTimeout
+        }()
+
+        oldSlaveID := handler.SlaveId
+        handler.SlaveId = byte(effectiveSlaveID)
+        defer func() {
+                handler.SlaveId = oldSlaveID
+        }()
+
+        reg := Register{
+                Register:     probe.Register,
+                FunctionCode: functionCode,
+                Words:        words,
+        }
+
+        for attempt := 1; attempt <= attempts; attempt++ {
 		resp, err := ReadRegisters(client, reg, probe.Offset)
 		if err != nil {
 			log.Printf("Device %s: healthcheck %s attempt=%d/%d failed: %v", devName, probeName, attempt, attempts, err)

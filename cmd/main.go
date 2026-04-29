@@ -172,7 +172,7 @@ func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, stri
 
 	addr := dev.IP + ":" + strconv.Itoa(dev.Port)
 	handler := modbus.NewTCPClientHandler(addr)
-	handler.Timeout = 5 * time.Second
+	handler.Timeout = 1 * time.Second
 
 	if err := handler.Connect(); err != nil {
 		fmt.Fprintf(&out, "  ERROR: unable to connect to Modbus endpoint %s: %v\n", addr, err)
@@ -180,17 +180,20 @@ func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, stri
 	}
 
 	client := modbus.NewClient(handler)
-	if !internal.RunDeviceHealthcheck(dev, handler, client) {
-		if err := handler.Close(); err != nil {
-			fmt.Fprintf(&out, "  ERROR: close after healthcheck failure: %v\n", err)
-		}
-		fmt.Fprintf(&out, "  ERROR: healthcheck failed; skipping polling\n")
-		return nil, out.String(), fmt.Errorf("healthcheck failed; skipping polling")
-	}
 
 	deviceSamples := make([]sample, 0, 256)
 	for _, slave := range dev.Slaves {
 		fmt.Fprintf(&out, "  Slave: %s\n", slave.Name)
+		if !internal.RunSlaveHealthcheck(dev, slave, handler, client) {
+			fmt.Fprintf(&out, "    healthcheck failed for slave %s; skipping\n", slave.Name)
+			if internal.ShouldFailRunOnDeviceFailure(dev) {
+				if err := handler.Close(); err != nil {
+					fmt.Fprintf(&out, "  ERROR: close after healthcheck failure: %v\n", err)
+				}
+				return nil, out.String(), fmt.Errorf("healthcheck failed for slave %s", slave.Name)
+			}
+			continue
+		}
 		handler.SlaveId = byte(slave.SlaveID)
 
 		for _, reg := range slave.Registers {
