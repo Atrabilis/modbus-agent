@@ -165,6 +165,74 @@ func isTimescaleLikeWriter(w storageWriter) bool {
 	}
 }
 
+func decodeRegisterValue(ts time.Time, reg internal.Register, decodedResp []byte, out *strings.Builder) (interface{}, bool) {
+	switch reg.Datatype {
+	case "U8":
+		v := float64(internal.U8(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "U16":
+		v := float64(internal.U16(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "S16":
+		v := float64(internal.S16(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "U32":
+		v := float64(internal.U32(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "S32":
+		v := float64(internal.S32(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "STR", "UTF8":
+		s := internal.UTF8(decodedResp)
+		fmt.Fprintf(out, "    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
+		return s, true
+
+	case "HEX":
+		s := internal.RawHex(decodedResp)
+		fmt.Fprintf(out, "    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
+		return s, true
+
+	case "U32LE":
+		v := float64(internal.U32LE(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "S32LE":
+		v := float64(internal.S32LE(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "F32BE":
+		v := float64(internal.F32BE(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "U64BE":
+		v := float64(internal.U64BE(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "S64BE":
+		v := float64(internal.S64BE(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	default:
+		fmt.Fprintf(out, "    unknown datatype=%q at addr=%d\n", reg.Datatype, reg.Register)
+		return nil, false
+	}
+}
+
 func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, string, error) {
 	var out strings.Builder
 	fmt.Fprintf(&out, "Device: %s\n", dev.Name)
@@ -178,6 +246,7 @@ func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, stri
 	defer session.Close()
 
 	deviceSamples := make([]sample, 0, 256)
+	activeSlaves := make([]internal.Slave, 0, len(dev.Slaves))
 	for _, slave := range dev.Slaves {
 		fmt.Fprintf(&out, "  Slave: %s\n", slave.Name)
 		if !internal.RunSlaveHealthcheck(dev, slave, session) {
@@ -185,103 +254,68 @@ func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, stri
 			if internal.ShouldFailRunOnDeviceFailure(dev) {
 				return nil, out.String(), fmt.Errorf("healthcheck failed for slave %s", slave.Name)
 			}
+			if !slave.SkipHealthcheck {
+				continue
+			}
+		}
+		activeSlaves = append(activeSlaves, slave)
+	}
+
+	plannedDevice := dev
+	plannedDevice.Slaves = activeSlaves
+	for _, block := range internal.PlanReadBlocks(plannedDevice) {
+		session.SetSlaveID(byte(block.SlaveID))
+		blockReg := internal.Register{
+			Register:     block.StartAddress,
+			FunctionCode: block.FunctionCode,
+			Words:        block.WordCount,
+		}
+
+		rawBlock, err := internal.ReadRegisters(session, blockReg, 0)
+		if err != nil {
+			for _, item := range block.PlannedReads {
+				fmt.Fprintf(&out, "    read err fc=%d addr=%d words=%d: %v\n", item.Register.FunctionCode, item.Register.Register, item.Register.Words, err)
+			}
 			continue
 		}
-		session.SetSlaveID(byte(slave.SlaveID))
 
-		for _, reg := range slave.Registers {
-			resp, err := internal.ReadRegisters(session, reg, slave.Offset)
-			if err != nil {
-				fmt.Fprintf(&out, "    read err fc=%d addr=%d words=%d: %v\n", reg.FunctionCode, reg.Register, reg.Words, err)
-				continue
+		want := internal.ExpectedResponseBytes(blockReg)
+		if len(rawBlock) != want {
+			for _, item := range block.PlannedReads {
+				fmt.Fprintf(&out, "    unexpected length at addr=%d: got=%d want=%d\n", item.Register.Register, len(rawBlock), want)
 			}
-			want := internal.ExpectedResponseBytes(reg)
-			if len(resp) != want {
-				fmt.Fprintf(&out, "    unexpected length at addr=%d: got=%d want=%d\n", reg.Register, len(resp), want)
-				continue
-			}
+			continue
+		}
+
+		for _, item := range block.PlannedReads {
+			reg := item.Register
+			slave := item.Slave
 			if reg.Name == "" {
 				fmt.Fprintf(&out, "    register at addr=%d has empty name; skipping\n", reg.Register)
 				continue
 			}
-			decodedResp, err := internal.DecodeResponseBytes(reg, resp)
+
+			rawResp, err := internal.SliceRegisterBytesFromBlock(block, item, rawBlock)
+			if err != nil {
+				fmt.Fprintf(&out, "    decode slice err fc=%d addr=%d words=%d: %v\n", reg.FunctionCode, reg.Register, reg.Words, err)
+				continue
+			}
+
+			decodedResp, err := internal.DecodeResponseBytes(reg, rawResp)
 			if err != nil {
 				fmt.Fprintf(&out, "    decode err fc=%d addr=%d words=%d: %v\n", reg.FunctionCode, reg.Register, reg.Words, err)
 				continue
 			}
-			// writeValue: float64 for numeric types, string for STR/UTF8/HEX.
-			var writeValue interface{}
-			switch reg.Datatype {
-			case "U8":
-				v := float64(internal.U8(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
 
-			case "U16":
-				v := float64(internal.U16(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "S16":
-				v := float64(internal.S16(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "U32":
-				v := float64(internal.U32(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "S32":
-				v := float64(internal.S32(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "STR", "UTF8":
-				s := internal.UTF8(decodedResp)
-				fmt.Fprintf(&out, "    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
-				writeValue = s
-
-			case "HEX":
-				s := internal.RawHex(decodedResp)
-				fmt.Fprintf(&out, "    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
-				writeValue = s
-
-			case "U32LE":
-				v := float64(internal.U32LE(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "S32LE":
-				v := float64(internal.S32LE(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "F32BE":
-				v := float64(internal.F32BE(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "U64BE":
-				v := float64(internal.U64BE(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "S64BE":
-				v := float64(internal.S64BE(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			default:
-				fmt.Fprintf(&out, "    unknown datatype=%q at addr=%d (raw=% x)\n", reg.Datatype, reg.Register, resp)
+			writeValue, ok := decodeRegisterValue(ts, reg, decodedResp, &out)
+			if !ok {
 				continue
 			}
 
-			// One sample per register. raw_<name> is kept for backends that use raw telemetry.
 			tags := internal.MergeTags(plant, &dev, &slave, &reg)
 			fields := map[string]interface{}{
 				reg.Name:          writeValue,
-				"raw_" + reg.Name: internal.RawHex(resp),
+				"raw_" + reg.Name: internal.RawHex(rawResp),
 			}
 			deviceSamples = append(deviceSamples, sample{Tags: tags, Fields: fields, Timestamp: ts})
 		}

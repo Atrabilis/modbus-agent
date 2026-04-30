@@ -249,3 +249,76 @@ func TestRTUOverTCPSessionReadHoldingRegisters(t *testing.T) {
 		t.Fatalf("unexpected payload: % x", resp)
 	}
 }
+
+func TestPlanReadBlocksGroupsVirtualTCUsIntoConsecutiveRanges(t *testing.T) {
+	t.Parallel()
+
+	dev := Device{
+		Mode: "rtu_over_tcp",
+		Slaves: []Slave{
+			{
+				Name:    "tcu_1",
+				SlaveID: 1,
+				Offset:  0,
+				Registers: []Register{
+					{Register: 151, FunctionCode: 3, Words: 1, Name: "actual_angle_deg"},
+				},
+			},
+			{
+				Name:    "tcu_2",
+				SlaveID: 1,
+				Offset:  -1,
+				Registers: []Register{
+					{Register: 151, FunctionCode: 3, Words: 1, Name: "actual_angle_deg"},
+				},
+			},
+			{
+				Name:    "tcu_3",
+				SlaveID: 1,
+				Offset:  -2,
+				Registers: []Register{
+					{Register: 151, FunctionCode: 3, Words: 1, Name: "actual_angle_deg"},
+				},
+			},
+		},
+	}
+
+	blocks := PlanReadBlocks(dev)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	if blocks[0].StartAddress != 151 || blocks[0].WordCount != 3 {
+		t.Fatalf("unexpected block range start=%d words=%d", blocks[0].StartAddress, blocks[0].WordCount)
+	}
+	if len(blocks[0].PlannedReads) != 3 {
+		t.Fatalf("expected 3 planned reads, got %d", len(blocks[0].PlannedReads))
+	}
+}
+
+func TestPlanReadBlocksRespectsRTUOverTCPConservativeBlockSize(t *testing.T) {
+	t.Parallel()
+
+	slaves := make([]Slave, 0, 9)
+	for i := 0; i < 9; i++ {
+		slaves = append(slaves, Slave{
+			Name:    "tcu",
+			SlaveID: 1,
+			Offset:  -i,
+			Registers: []Register{
+				{Register: 151, FunctionCode: 3, Words: 1, Name: "actual_angle_deg"},
+			},
+		})
+	}
+	dev := Device{
+		Mode:   "rtu_over_tcp",
+		Slaves: slaves,
+	}
+
+	blocks := PlanReadBlocks(dev)
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
+	}
+	if blocks[0].WordCount != 8 || blocks[1].WordCount != 1 {
+		t.Fatalf("unexpected block sizes: %d and %d", blocks[0].WordCount, blocks[1].WordCount)
+	}
+}

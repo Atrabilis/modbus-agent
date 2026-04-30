@@ -174,6 +174,31 @@ func DecodeResponseBytes(reg Register, resp []byte) ([]byte, error) {
 	}
 }
 
+func SliceRegisterBytesFromBlock(block ReadBlock, item PlannedRegisterRead, raw []byte) ([]byte, error) {
+	switch item.Register.FunctionCode {
+	case 1:
+		// Coil slicing within aggregated blocks is intentionally unsupported for now.
+		return nil, fmt.Errorf("block slicing for function_code=1 is not supported")
+	default:
+		startWords := item.EffectiveAddress - block.StartAddress
+		if startWords < 0 {
+			return nil, fmt.Errorf("invalid negative slice offset for register %d", item.Register.Register)
+		}
+		startBytes := startWords * 2
+		endBytes := startBytes + ExpectedResponseBytes(item.Register)
+		if startBytes < 0 || endBytes > len(raw) {
+			return nil, fmt.Errorf(
+				"block slice out of bounds for register %d: start=%d end=%d len=%d",
+				item.Register.Register,
+				startBytes,
+				endBytes,
+				len(raw),
+			)
+		}
+		return raw[startBytes:endBytes], nil
+	}
+}
+
 func decodeCoilsResponse(reg Register, resp []byte) ([]byte, error) {
 	if reg.Words <= 0 {
 		return nil, fmt.Errorf("invalid coil quantity=%d for register %d", reg.Words, reg.Register)
