@@ -16,7 +16,6 @@ import (
 	"github.com/atrabilis/modbus-agent/storage/timescale"
 	"github.com/atrabilis/modbus-agent/storage/timescale_shadow"
 
-	"github.com/goburrow/modbus"
 	dotenv "github.com/joho/godotenv"
 )
 
@@ -170,34 +169,28 @@ func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, stri
 	var out strings.Builder
 	fmt.Fprintf(&out, "Device: %s\n", dev.Name)
 
-	addr := dev.IP + ":" + strconv.Itoa(dev.Port)
-	handler := modbus.NewTCPClientHandler(addr)
-	handler.Timeout = 1 * time.Second
-
-	if err := handler.Connect(); err != nil {
-		fmt.Fprintf(&out, "  ERROR: unable to connect to Modbus endpoint %s: %v\n", addr, err)
-		return nil, out.String(), fmt.Errorf("unable to connect to Modbus endpoint %s: %w", addr, err)
+	session, err := internal.NewPollSession(dev)
+	if err != nil {
+		addr := dev.IP + ":" + strconv.Itoa(dev.Port)
+		fmt.Fprintf(&out, "  ERROR: unable to connect to Modbus endpoint %s (%s): %v\n", addr, dev.TransportMode(), err)
+		return nil, out.String(), err
 	}
-
-	client := modbus.NewClient(handler)
+	defer session.Close()
 
 	deviceSamples := make([]sample, 0, 256)
 	for _, slave := range dev.Slaves {
 		fmt.Fprintf(&out, "  Slave: %s\n", slave.Name)
-		if !internal.RunSlaveHealthcheck(dev, slave, handler, client) {
+		if !internal.RunSlaveHealthcheck(dev, slave, session) {
 			fmt.Fprintf(&out, "    healthcheck failed for slave %s; skipping\n", slave.Name)
 			if internal.ShouldFailRunOnDeviceFailure(dev) {
-				if err := handler.Close(); err != nil {
-					fmt.Fprintf(&out, "  ERROR: close after healthcheck failure: %v\n", err)
-				}
 				return nil, out.String(), fmt.Errorf("healthcheck failed for slave %s", slave.Name)
 			}
 			continue
 		}
-		handler.SlaveId = byte(slave.SlaveID)
+		session.SetSlaveID(byte(slave.SlaveID))
 
 		for _, reg := range slave.Registers {
-			resp, err := internal.ReadRegisters(client, reg, slave.Offset)
+			resp, err := internal.ReadRegisters(session, reg, slave.Offset)
 			if err != nil {
 				fmt.Fprintf(&out, "    read err fc=%d addr=%d words=%d: %v\n", reg.FunctionCode, reg.Register, reg.Words, err)
 				continue
@@ -292,11 +285,6 @@ func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, stri
 			}
 			deviceSamples = append(deviceSamples, sample{Tags: tags, Fields: fields, Timestamp: ts})
 		}
-	}
-
-	// Close TCP once all slaves for this device have been processed.
-	if err := handler.Close(); err != nil {
-		fmt.Fprintf(&out, "  ERROR: close error: %v\n", err)
 	}
 
 	return deviceSamples, out.String(), nil

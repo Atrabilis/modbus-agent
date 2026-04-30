@@ -1,13 +1,13 @@
 package internal
 
 import (
-	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
-
-	"github.com/goburrow/modbus"
 )
 
 func TestLoadRegistersParsesRootPlant(t *testing.T) {
@@ -35,6 +35,35 @@ devices:
 
 	if cfg.Plant != "lalcktur" {
 		t.Fatalf("expected plant lalcktur, got %q", cfg.Plant)
+	}
+}
+
+func TestLoadRegistersParsesTransportMode(t *testing.T) {
+	t.Parallel()
+
+	yaml := `plant: petorca
+devices:
+  - device:
+      name: "tracker"
+      ip: "192.168.1.23"
+      port: 4001
+      mode: "rtu_over_tcp"
+      slaves: []
+`
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write temp yaml: %v", err)
+	}
+
+	var cfg Devices
+	if err := LoadRegisters(path, &cfg); err != nil {
+		t.Fatalf("LoadRegisters failed: %v", err)
+	}
+
+	if got := cfg.Devices[0].Device.TransportMode(); got != "rtu_over_tcp" {
+		t.Fatalf("expected transport mode rtu_over_tcp, got %q", got)
 	}
 }
 
@@ -69,26 +98,43 @@ func TestMergeTagsDoesNotOverrideSpecificPlant(t *testing.T) {
 	}
 }
 
-type fakeHealthcheckClient struct {
-	handler     *modbus.TCPClientHandler
+type fakeSession struct {
+	slaveID     byte
 	lastSlaveID byte
-	fail        bool
+	timeout     time.Duration
 }
 
-func (f *fakeHealthcheckClient) ReadCoils(address, quantity uint16) ([]byte, error) {
+func (f *fakeSession) ReadCoils(address, quantity uint16) ([]byte, error) {
 	return nil, nil
 }
 
-func (f *fakeHealthcheckClient) ReadHoldingRegisters(address, quantity uint16) ([]byte, error) {
+func (f *fakeSession) ReadHoldingRegisters(address, quantity uint16) ([]byte, error) {
 	return nil, nil
 }
 
-func (f *fakeHealthcheckClient) ReadInputRegisters(address, quantity uint16) ([]byte, error) {
-	f.lastSlaveID = f.handler.SlaveId
-	if f.fail {
-		return nil, fmt.Errorf("read failed")
-	}
+func (f *fakeSession) ReadInputRegisters(address, quantity uint16) ([]byte, error) {
+	f.lastSlaveID = f.slaveID
 	return []byte{0, 1}, nil
+}
+
+func (f *fakeSession) SetSlaveID(id byte) {
+	f.slaveID = id
+}
+
+func (f *fakeSession) SlaveID() byte {
+	return f.slaveID
+}
+
+func (f *fakeSession) SetTimeout(timeout time.Duration) {
+	f.timeout = timeout
+}
+
+func (f *fakeSession) Timeout() time.Duration {
+	return f.timeout
+}
+
+func (f *fakeSession) Close() error {
+	return nil
 }
 
 func boolPtr(v bool) *bool {
@@ -110,15 +156,70 @@ func TestRunSlaveHealthcheckUsesSlaveIDDefault(t *testing.T) {
 		},
 	}
 	slave := Slave{Name: "slave1", SlaveID: 7}
-	handler := modbus.NewTCPClientHandler("127.0.0.1:502")
-	handler.Timeout = 5 * time.Second
-	client := &fakeHealthcheckClient{handler: handler}
+	session := &fakeSession{timeout: 5 * time.Second}
 
-	ok := RunSlaveHealthcheck(dev, slave, handler, client)
+	ok := RunSlaveHealthcheck(dev, slave, session)
 	if !ok {
 		t.Fatal("expected healthcheck to pass")
 	}
-	if client.lastSlaveID != byte(slave.SlaveID) {
-		t.Fatalf("expected slave id %d used in healthcheck, got %d", slave.SlaveID, client.lastSlaveID)
+	if session.lastSlaveID != byte(slave.SlaveID) {
+		t.Fatalf("expected slave id %d used in healthcheck, got %d", slave.SlaveID, session.lastSlaveID)
+	}
+}
+
+func TestRTUOverTCPSessionReadHoldingRegisters(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		req := make([]byte, 8)
+		if _, err := io.ReadFull(conn, req); err != nil {
+			return
+		}
+
+		resp := []byte{7, 3, 2, 0x12, 0x34}
+		crc := crc16(resp)
+		resp = append(resp, byte(crc), byte(crc>>8))
+		_, _ = conn.Write(resp)
+	}()
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("atoi port: %v", err)
+	}
+
+	session, err := NewPollSession(Device{
+		Name: "tracker",
+		IP:   host,
+		Port: port,
+		Mode: "rtu_over_tcp",
+	})
+	if err != nil {
+		t.Fatalf("new poll session: %v", err)
+	}
+	defer session.Close()
+	session.SetSlaveID(7)
+
+	resp, err := session.ReadHoldingRegisters(151, 1)
+	if err != nil {
+		t.Fatalf("ReadHoldingRegisters failed: %v", err)
+	}
+	if len(resp) != 2 || resp[0] != 0x12 || resp[1] != 0x34 {
+		t.Fatalf("unexpected payload: % x", resp)
 	}
 }

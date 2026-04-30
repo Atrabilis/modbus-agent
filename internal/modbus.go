@@ -24,10 +24,22 @@ type Device struct {
 	Name        string             `yaml:"name"`
 	IP          string             `yaml:"ip"`
 	Port        int                `yaml:"port"`
+	Mode        string             `yaml:"mode,omitempty"`
 	Flags       []string           `yaml:"flags,omitempty"`
 	Tags        map[string]string  `yaml:"tags,omitempty"`
 	Healthcheck *HealthcheckConfig `yaml:"healthcheck,omitempty"`
 	Slaves      []Slave            `yaml:"slaves"`
+}
+
+func (d Device) TransportMode() string {
+	switch strings.ToLower(strings.TrimSpace(d.Mode)) {
+	case "", "tcp", "modbus_tcp", "modbus-tcp":
+		return "tcp"
+	case "rtu_over_tcp", "rtu-over-tcp", "tcp_rtu", "tcp-rtu":
+		return "rtu_over_tcp"
+	default:
+		return "tcp"
+	}
 }
 
 type HealthcheckConfig struct {

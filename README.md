@@ -83,6 +83,13 @@ Cada output en `storage.outputs` define:
 - `type`
 - `enabled` (opcional, default `true`)
 
+Cada `device` puede definir opcionalmente:
+
+- `mode: tcp` (default)
+- `mode: rtu_over_tcp`
+
+`rtu_over_tcp` sirve para escenarios tipo NPort donde el agente abre un socket TCP y transmite frames Modbus RTU crudos con CRC hacia un bus serial remoto.
+
 ### Ejemplo `timescaledb`
 
 ```yaml
