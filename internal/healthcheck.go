@@ -21,6 +21,10 @@ func RunDeviceHealthcheck(dev Device, session PollSession) bool {
 }
 
 func RunSlaveHealthcheck(dev Device, slave Slave, session PollSession) bool {
+	if slave.SkipHealthcheck {
+		return true
+	}
+
 	if dev.Healthcheck == nil || !dev.Healthcheck.IsEnabled() {
 		return true
 	}

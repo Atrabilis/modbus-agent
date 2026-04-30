@@ -96,11 +96,12 @@ func (h *HealthcheckConfig) SuccessPolicyMode() string {
 }
 
 type Slave struct {
-	Name      string            `yaml:"name"`
-	SlaveID   int               `yaml:"slave_id"`
-	Offset    int               `yaml:"offset"`
-	Tags      map[string]string `yaml:"tags,omitempty"`
-	Registers []Register        `yaml:"modbus_registers"`
+	Name            string            `yaml:"name"`
+	SlaveID         int               `yaml:"slave_id"`
+	Offset          int               `yaml:"offset"`
+	SkipHealthcheck bool              `yaml:"skip_healthcheck,omitempty"`
+	Tags            map[string]string `yaml:"tags,omitempty"`
+	Registers       []Register        `yaml:"modbus_registers"`
 }
 
 type Register struct {

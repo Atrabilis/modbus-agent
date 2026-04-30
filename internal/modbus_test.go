@@ -167,6 +167,32 @@ func TestRunSlaveHealthcheckUsesSlaveIDDefault(t *testing.T) {
 	}
 }
 
+func TestRunSlaveHealthcheckSkipsWhenSlaveRequestsIt(t *testing.T) {
+	t.Parallel()
+
+	dev := Device{
+		Name: "dev1",
+		Healthcheck: &HealthcheckConfig{
+			Enabled: boolPtr(true),
+			Probes: []HealthcheckProbe{{
+				FunctionCode: 4,
+				Register:     1,
+				Words:        1,
+			}},
+		},
+	}
+	slave := Slave{Name: "slave1", SlaveID: 7, SkipHealthcheck: true}
+	session := &fakeSession{timeout: 5 * time.Second}
+
+	ok := RunSlaveHealthcheck(dev, slave, session)
+	if !ok {
+		t.Fatal("expected skipped healthcheck to pass")
+	}
+	if session.lastSlaveID != 0 {
+		t.Fatalf("expected no healthcheck read when skip_healthcheck is true, got slave id %d", session.lastSlaveID)
+	}
+}
+
 func TestRTUOverTCPSessionReadHoldingRegisters(t *testing.T) {
 	t.Parallel()
 
