@@ -33,11 +33,11 @@ func NewPollSession(dev Device) (PollSession, error) {
 		}
 		return &rtuOverTCPSession{
 			conn:    conn,
-			timeout: time.Second,
+			timeout: 500 * time.Millisecond,
 		}, nil
 	default:
 		handler := modbus.NewTCPClientHandler(addr)
-		handler.Timeout = time.Second
+		handler.Timeout = 500 * time.Millisecond
 		if err := handler.Connect(); err != nil {
 			return nil, fmt.Errorf("unable to connect to Modbus TCP endpoint %s: %w", addr, err)
 		}
