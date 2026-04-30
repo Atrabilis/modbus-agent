@@ -39,6 +39,30 @@ type sample struct {
 	Timestamp time.Time
 }
 
+type countingPollSession struct {
+	internal.PollSession
+	requests int
+}
+
+func (s *countingPollSession) ReadCoils(address, quantity uint16) (results []byte, err error) {
+	s.requests++
+	return s.PollSession.ReadCoils(address, quantity)
+}
+
+func (s *countingPollSession) ReadHoldingRegisters(address, quantity uint16) (results []byte, err error) {
+	s.requests++
+	return s.PollSession.ReadHoldingRegisters(address, quantity)
+}
+
+func (s *countingPollSession) ReadInputRegisters(address, quantity uint16) (results []byte, err error) {
+	s.requests++
+	return s.PollSession.ReadInputRegisters(address, quantity)
+}
+
+func (s *countingPollSession) RequestCount() int {
+	return s.requests
+}
+
 const timescaleWriteWorkers = 8
 
 func aggregateSamplesForTimescale(samples []sample) []sample {
@@ -233,16 +257,17 @@ func decodeRegisterValue(ts time.Time, reg internal.Register, decodedResp []byte
 	}
 }
 
-func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, string, error) {
+func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, string, int, error) {
 	var out strings.Builder
 	fmt.Fprintf(&out, "Device: %s\n", dev.Name)
 
-	session, err := internal.NewPollSession(dev)
+	baseSession, err := internal.NewPollSession(dev)
 	if err != nil {
 		addr := dev.IP + ":" + strconv.Itoa(dev.Port)
 		fmt.Fprintf(&out, "  ERROR: unable to connect to Modbus endpoint %s (%s): %v\n", addr, dev.TransportMode(), err)
-		return nil, out.String(), err
+		return nil, out.String(), 0, err
 	}
+	session := &countingPollSession{PollSession: baseSession}
 	defer session.Close()
 
 	deviceSamples := make([]sample, 0, 256)
@@ -252,7 +277,7 @@ func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, stri
 		if !internal.RunSlaveHealthcheck(dev, slave, session) {
 			fmt.Fprintf(&out, "    healthcheck failed for slave %s; skipping\n", slave.Name)
 			if internal.ShouldFailRunOnDeviceFailure(dev) {
-				return nil, out.String(), fmt.Errorf("healthcheck failed for slave %s", slave.Name)
+				return nil, out.String(), session.RequestCount(), fmt.Errorf("healthcheck failed for slave %s", slave.Name)
 			}
 			if !slave.SkipHealthcheck {
 				continue
@@ -321,7 +346,7 @@ func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, stri
 		}
 	}
 
-	return deviceSamples, out.String(), nil
+	return deviceSamples, out.String(), session.RequestCount(), nil
 }
 
 func main() {
@@ -425,6 +450,7 @@ func main() {
 		deviceName       string
 		failRunOnFailure bool
 		samples          []sample
+		requestCount     int
 		output           string
 		err              error
 	}
@@ -438,12 +464,13 @@ func main() {
 		go func(idx int, plant string, dev internal.Device) {
 			defer wg.Done()
 
-			deviceSamples, output, err := pollDevice(plant, dev, ts)
+			deviceSamples, output, requestCount, err := pollDevice(plant, dev, ts)
 			results <- devicePollResult{
 				index:            idx,
 				deviceName:       dev.Name,
 				failRunOnFailure: internal.ShouldFailRunOnDeviceFailure(dev),
 				samples:          deviceSamples,
+				requestCount:     requestCount,
 				output:           output,
 				err:              err,
 			}
@@ -453,11 +480,13 @@ func main() {
 	close(results)
 
 	failRunErrors := make([]string, 0, 4)
+	totalRequests := 0
 	orderedResults := make([]devicePollResult, len(devices.Devices))
 	for res := range results {
 		orderedResults[res.index] = res
 	}
 	for _, res := range orderedResults {
+		totalRequests += res.requestCount
 		if strings.TrimSpace(res.output) != "" {
 			fmt.Print(res.output)
 		}
@@ -527,5 +556,6 @@ func main() {
 	}
 
 	// Stage 5: finish execution.
+	fmt.Printf("Total Modbus requests: %d\n", totalRequests)
 	fmt.Println("Time taken:", time.Since(begin))
 }
