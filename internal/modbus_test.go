@@ -322,3 +322,60 @@ func TestPlanReadBlocksRespectsRTUOverTCPConservativeBlockSize(t *testing.T) {
 		t.Fatalf("unexpected block sizes: %d and %d", blocks[0].WordCount, blocks[1].WordCount)
 	}
 }
+
+func TestPlanReadBlocksCanBeDisabledPerDevice(t *testing.T) {
+	t.Parallel()
+
+	enabled := false
+	dev := Device{
+		Mode: "tcp",
+		ReadOptimization: &ReadOptimizationConfig{
+			Enabled: &enabled,
+		},
+		Slaves: []Slave{
+			{
+				Name:    "s1",
+				SlaveID: 1,
+				Registers: []Register{
+					{Register: 100, FunctionCode: 3, Words: 1, Name: "r1"},
+					{Register: 101, FunctionCode: 3, Words: 1, Name: "r2"},
+				},
+			},
+		},
+	}
+
+	blocks := PlanReadBlocks(dev)
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks when optimization is disabled, got %d", len(blocks))
+	}
+}
+
+func TestPlanReadBlocksRespectsConfiguredGapLimit(t *testing.T) {
+	t.Parallel()
+
+	dev := Device{
+		Mode: "tcp",
+		ReadOptimization: &ReadOptimizationConfig{
+			MaxBlockWords: 10,
+			MaxGapWords:   1,
+		},
+		Slaves: []Slave{
+			{
+				Name:    "s1",
+				SlaveID: 1,
+				Registers: []Register{
+					{Register: 100, FunctionCode: 3, Words: 1, Name: "r1"},
+					{Register: 102, FunctionCode: 3, Words: 1, Name: "r2"},
+				},
+			},
+		},
+	}
+
+	blocks := PlanReadBlocks(dev)
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block with gap allowance, got %d", len(blocks))
+	}
+	if blocks[0].StartAddress != 100 || blocks[0].WordCount != 3 {
+		t.Fatalf("unexpected block range start=%d words=%d", blocks[0].StartAddress, blocks[0].WordCount)
+	}
+}

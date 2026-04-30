@@ -21,14 +21,21 @@ type DeviceItem struct {
 }
 
 type Device struct {
-	Name        string             `yaml:"name"`
-	IP          string             `yaml:"ip"`
-	Port        int                `yaml:"port"`
-	Mode        string             `yaml:"mode,omitempty"`
-	Flags       []string           `yaml:"flags,omitempty"`
-	Tags        map[string]string  `yaml:"tags,omitempty"`
-	Healthcheck *HealthcheckConfig `yaml:"healthcheck,omitempty"`
-	Slaves      []Slave            `yaml:"slaves"`
+	Name             string                  `yaml:"name"`
+	IP               string                  `yaml:"ip"`
+	Port             int                     `yaml:"port"`
+	Mode             string                  `yaml:"mode,omitempty"`
+	Flags            []string                `yaml:"flags,omitempty"`
+	Tags             map[string]string       `yaml:"tags,omitempty"`
+	Healthcheck      *HealthcheckConfig      `yaml:"healthcheck,omitempty"`
+	ReadOptimization *ReadOptimizationConfig `yaml:"read_optimization,omitempty"`
+	Slaves           []Slave                 `yaml:"slaves"`
+}
+
+type ReadOptimizationConfig struct {
+	Enabled       *bool `yaml:"enabled,omitempty"`
+	MaxBlockWords int   `yaml:"max_block_words,omitempty"`
+	MaxGapWords   int   `yaml:"max_gap_words,omitempty"`
 }
 
 func (d Device) TransportMode() string {

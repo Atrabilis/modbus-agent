@@ -51,6 +51,11 @@ func PlanReadBlocks(dev Device) []ReadBlock {
 
 	blocks := make([]ReadBlock, 0, len(planned))
 	for _, item := range planned {
+		if !blockReadsEnabled(dev) {
+			blocks = append(blocks, newReadBlock(item))
+			continue
+		}
+
 		if item.Register.FunctionCode == 1 {
 			blocks = append(blocks, ReadBlock{
 				SlaveID:      item.Slave.SlaveID,
@@ -63,13 +68,14 @@ func PlanReadBlocks(dev Device) []ReadBlock {
 		}
 
 		maxWords := blockWordLimit(dev)
+		maxGapWords := blockGapLimit(dev)
 		if len(blocks) == 0 {
 			blocks = append(blocks, newReadBlock(item))
 			continue
 		}
 
 		last := &blocks[len(blocks)-1]
-		if !canExtendBlock(*last, item, maxWords) {
+		if !canExtendBlock(*last, item, maxWords, maxGapWords) {
 			blocks = append(blocks, newReadBlock(item))
 			continue
 		}
@@ -83,12 +89,33 @@ func PlanReadBlocks(dev Device) []ReadBlock {
 }
 
 func blockWordLimit(dev Device) int {
+	if dev.ReadOptimization != nil && dev.ReadOptimization.MaxBlockWords > 0 {
+		if dev.ReadOptimization.MaxBlockWords > maxModbusRegisterBlockWords {
+			return maxModbusRegisterBlockWords
+		}
+		return dev.ReadOptimization.MaxBlockWords
+	}
+
 	switch dev.TransportMode() {
 	case "rtu_over_tcp":
 		return defaultRTUOverTCPBlockWords
 	default:
 		return defaultTCPBlockWords
 	}
+}
+
+func blockGapLimit(dev Device) int {
+	if dev.ReadOptimization != nil && dev.ReadOptimization.MaxGapWords > 0 {
+		return dev.ReadOptimization.MaxGapWords
+	}
+	return 0
+}
+
+func blockReadsEnabled(dev Device) bool {
+	if dev.ReadOptimization == nil || dev.ReadOptimization.Enabled == nil {
+		return true
+	}
+	return *dev.ReadOptimization.Enabled
 }
 
 func newReadBlock(item PlannedRegisterRead) ReadBlock {
@@ -101,7 +128,7 @@ func newReadBlock(item PlannedRegisterRead) ReadBlock {
 	}
 }
 
-func canExtendBlock(block ReadBlock, item PlannedRegisterRead, maxWords int) bool {
+func canExtendBlock(block ReadBlock, item PlannedRegisterRead, maxWords int, maxGapWords int) bool {
 	if block.SlaveID != item.Slave.SlaveID {
 		return false
 	}
@@ -117,7 +144,7 @@ func canExtendBlock(block ReadBlock, item PlannedRegisterRead, maxWords int) boo
 
 	blockEnd := block.StartAddress + block.WordCount
 	itemEnd := item.EffectiveAddress + item.Register.Words
-	if item.EffectiveAddress > blockEnd {
+	if item.EffectiveAddress > blockEnd+maxGapWords {
 		return false
 	}
 
