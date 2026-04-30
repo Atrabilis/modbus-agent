@@ -39,6 +39,47 @@ type sample struct {
 	Timestamp time.Time
 }
 
+type countingPollSession struct {
+	internal.PollSession
+	requests       int
+	failedRequests int
+}
+
+func (s *countingPollSession) ReadCoils(address, quantity uint16) (results []byte, err error) {
+	s.requests++
+	results, err = s.PollSession.ReadCoils(address, quantity)
+	if err != nil {
+		s.failedRequests++
+	}
+	return results, err
+}
+
+func (s *countingPollSession) ReadHoldingRegisters(address, quantity uint16) (results []byte, err error) {
+	s.requests++
+	results, err = s.PollSession.ReadHoldingRegisters(address, quantity)
+	if err != nil {
+		s.failedRequests++
+	}
+	return results, err
+}
+
+func (s *countingPollSession) ReadInputRegisters(address, quantity uint16) (results []byte, err error) {
+	s.requests++
+	results, err = s.PollSession.ReadInputRegisters(address, quantity)
+	if err != nil {
+		s.failedRequests++
+	}
+	return results, err
+}
+
+func (s *countingPollSession) RequestCount() int {
+	return s.requests
+}
+
+func (s *countingPollSession) FailedRequestCount() int {
+	return s.failedRequests
+}
+
 const timescaleWriteWorkers = 8
 
 func aggregateSamplesForTimescale(samples []sample) []sample {
@@ -165,129 +206,164 @@ func isTimescaleLikeWriter(w storageWriter) bool {
 	}
 }
 
-func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, string, error) {
+func decodeRegisterValue(ts time.Time, reg internal.Register, decodedResp []byte, out *strings.Builder) (interface{}, bool) {
+	switch reg.Datatype {
+	case "U8":
+		v := float64(internal.U8(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "U16":
+		v := float64(internal.U16(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "S16":
+		v := float64(internal.S16(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "U32":
+		v := float64(internal.U32(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "S32":
+		v := float64(internal.S32(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "STR", "UTF8":
+		s := internal.UTF8(decodedResp)
+		fmt.Fprintf(out, "    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
+		return s, true
+
+	case "HEX":
+		s := internal.RawHex(decodedResp)
+		fmt.Fprintf(out, "    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
+		return s, true
+
+	case "U32LE":
+		v := float64(internal.U32LE(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "S32LE":
+		v := float64(internal.S32LE(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "F32BE":
+		v := float64(internal.F32BE(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "U64BE":
+		v := float64(internal.U64BE(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	case "S64BE":
+		v := float64(internal.S64BE(decodedResp)) * reg.Gain
+		fmt.Fprintf(out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
+		return v, true
+
+	default:
+		fmt.Fprintf(out, "    unknown datatype=%q at addr=%d\n", reg.Datatype, reg.Register)
+		return nil, false
+	}
+}
+
+func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, string, int, int, error) {
 	var out strings.Builder
 	fmt.Fprintf(&out, "Device: %s\n", dev.Name)
 
-	session, err := internal.NewPollSession(dev)
+	baseSession, err := internal.NewPollSession(dev)
 	if err != nil {
 		addr := dev.IP + ":" + strconv.Itoa(dev.Port)
 		fmt.Fprintf(&out, "  ERROR: unable to connect to Modbus endpoint %s (%s): %v\n", addr, dev.TransportMode(), err)
-		return nil, out.String(), err
+		return nil, out.String(), 0, 0, err
 	}
+	session := &countingPollSession{PollSession: baseSession}
 	defer session.Close()
 
 	deviceSamples := make([]sample, 0, 256)
+	activeSlaves := make([]internal.Slave, 0, len(dev.Slaves))
 	for _, slave := range dev.Slaves {
 		fmt.Fprintf(&out, "  Slave: %s\n", slave.Name)
 		if !internal.RunSlaveHealthcheck(dev, slave, session) {
 			fmt.Fprintf(&out, "    healthcheck failed for slave %s; skipping\n", slave.Name)
 			if internal.ShouldFailRunOnDeviceFailure(dev) {
-				return nil, out.String(), fmt.Errorf("healthcheck failed for slave %s", slave.Name)
+				return nil, out.String(), session.RequestCount(), session.FailedRequestCount(), fmt.Errorf("healthcheck failed for slave %s", slave.Name)
+			}
+			if !slave.SkipHealthcheck {
+				continue
+			}
+		}
+		activeSlaves = append(activeSlaves, slave)
+	}
+
+	plannedDevice := dev
+	plannedDevice.Slaves = activeSlaves
+	for _, block := range internal.PlanReadBlocks(plannedDevice) {
+		session.SetSlaveID(byte(block.SlaveID))
+		blockReg := internal.Register{
+			Register:     block.StartAddress,
+			FunctionCode: block.FunctionCode,
+			Words:        block.WordCount,
+		}
+
+		rawBlock, err := internal.ReadRegisters(session, blockReg, 0)
+		if err != nil {
+			for _, item := range block.PlannedReads {
+				fmt.Fprintf(&out, "    read err fc=%d addr=%d words=%d: %v\n", item.Register.FunctionCode, item.Register.Register, item.Register.Words, err)
 			}
 			continue
 		}
-		session.SetSlaveID(byte(slave.SlaveID))
 
-		for _, reg := range slave.Registers {
-			resp, err := internal.ReadRegisters(session, reg, slave.Offset)
-			if err != nil {
-				fmt.Fprintf(&out, "    read err fc=%d addr=%d words=%d: %v\n", reg.FunctionCode, reg.Register, reg.Words, err)
-				continue
+		want := internal.ExpectedResponseBytes(blockReg)
+		if len(rawBlock) != want {
+			for _, item := range block.PlannedReads {
+				fmt.Fprintf(&out, "    unexpected length at addr=%d: got=%d want=%d\n", item.Register.Register, len(rawBlock), want)
 			}
-			want := internal.ExpectedResponseBytes(reg)
-			if len(resp) != want {
-				fmt.Fprintf(&out, "    unexpected length at addr=%d: got=%d want=%d\n", reg.Register, len(resp), want)
-				continue
-			}
+			continue
+		}
+
+		for _, item := range block.PlannedReads {
+			reg := item.Register
+			slave := item.Slave
 			if reg.Name == "" {
 				fmt.Fprintf(&out, "    register at addr=%d has empty name; skipping\n", reg.Register)
 				continue
 			}
-			decodedResp, err := internal.DecodeResponseBytes(reg, resp)
+
+			rawResp, err := internal.SliceRegisterBytesFromBlock(block, item, rawBlock)
+			if err != nil {
+				fmt.Fprintf(&out, "    decode slice err fc=%d addr=%d words=%d: %v\n", reg.FunctionCode, reg.Register, reg.Words, err)
+				continue
+			}
+
+			decodedResp, err := internal.DecodeResponseBytes(reg, rawResp)
 			if err != nil {
 				fmt.Fprintf(&out, "    decode err fc=%d addr=%d words=%d: %v\n", reg.FunctionCode, reg.Register, reg.Words, err)
 				continue
 			}
-			// writeValue: float64 for numeric types, string for STR/UTF8/HEX.
-			var writeValue interface{}
-			switch reg.Datatype {
-			case "U8":
-				v := float64(internal.U8(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
 
-			case "U16":
-				v := float64(internal.U16(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "S16":
-				v := float64(internal.S16(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "U32":
-				v := float64(internal.U32(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "S32":
-				v := float64(internal.S32(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "STR", "UTF8":
-				s := internal.UTF8(decodedResp)
-				fmt.Fprintf(&out, "    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
-				writeValue = s
-
-			case "HEX":
-				s := internal.RawHex(decodedResp)
-				fmt.Fprintf(&out, "    [%s] %-28s -> %s %s\n", ts, reg.Name, s, reg.Unit)
-				writeValue = s
-
-			case "U32LE":
-				v := float64(internal.U32LE(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "S32LE":
-				v := float64(internal.S32LE(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "F32BE":
-				v := float64(internal.F32BE(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "U64BE":
-				v := float64(internal.U64BE(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			case "S64BE":
-				v := float64(internal.S64BE(decodedResp)) * reg.Gain
-				fmt.Fprintf(&out, "    [%s] %-28s -> %.6f %s\n", ts, reg.Name, v, reg.Unit)
-				writeValue = v
-
-			default:
-				fmt.Fprintf(&out, "    unknown datatype=%q at addr=%d (raw=% x)\n", reg.Datatype, reg.Register, resp)
+			writeValue, ok := decodeRegisterValue(ts, reg, decodedResp, &out)
+			if !ok {
 				continue
 			}
 
-			// One sample per register. raw_<name> is kept for backends that use raw telemetry.
 			tags := internal.MergeTags(plant, &dev, &slave, &reg)
 			fields := map[string]interface{}{
 				reg.Name:          writeValue,
-				"raw_" + reg.Name: internal.RawHex(resp),
+				"raw_" + reg.Name: internal.RawHex(rawResp),
 			}
 			deviceSamples = append(deviceSamples, sample{Tags: tags, Fields: fields, Timestamp: ts})
 		}
 	}
 
-	return deviceSamples, out.String(), nil
+	return deviceSamples, out.String(), session.RequestCount(), session.FailedRequestCount(), nil
 }
 
 func main() {
@@ -391,6 +467,8 @@ func main() {
 		deviceName       string
 		failRunOnFailure bool
 		samples          []sample
+		requestCount     int
+		failedRequests   int
 		output           string
 		err              error
 	}
@@ -404,12 +482,14 @@ func main() {
 		go func(idx int, plant string, dev internal.Device) {
 			defer wg.Done()
 
-			deviceSamples, output, err := pollDevice(plant, dev, ts)
+			deviceSamples, output, requestCount, failedRequests, err := pollDevice(plant, dev, ts)
 			results <- devicePollResult{
 				index:            idx,
 				deviceName:       dev.Name,
 				failRunOnFailure: internal.ShouldFailRunOnDeviceFailure(dev),
 				samples:          deviceSamples,
+				requestCount:     requestCount,
+				failedRequests:   failedRequests,
 				output:           output,
 				err:              err,
 			}
@@ -419,11 +499,15 @@ func main() {
 	close(results)
 
 	failRunErrors := make([]string, 0, 4)
+	totalRequests := 0
+	totalFailedRequests := 0
 	orderedResults := make([]devicePollResult, len(devices.Devices))
 	for res := range results {
 		orderedResults[res.index] = res
 	}
 	for _, res := range orderedResults {
+		totalRequests += res.requestCount
+		totalFailedRequests += res.failedRequests
 		if strings.TrimSpace(res.output) != "" {
 			fmt.Print(res.output)
 		}
@@ -493,5 +577,7 @@ func main() {
 	}
 
 	// Stage 5: finish execution.
+	fmt.Printf("Total Modbus requests: %d\n", totalRequests)
+	fmt.Printf("Failed/timeout Modbus requests: %d\n", totalFailedRequests)
 	fmt.Println("Time taken:", time.Since(begin))
 }

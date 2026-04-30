@@ -21,14 +21,21 @@ type DeviceItem struct {
 }
 
 type Device struct {
-	Name        string             `yaml:"name"`
-	IP          string             `yaml:"ip"`
-	Port        int                `yaml:"port"`
-	Mode        string             `yaml:"mode,omitempty"`
-	Flags       []string           `yaml:"flags,omitempty"`
-	Tags        map[string]string  `yaml:"tags,omitempty"`
-	Healthcheck *HealthcheckConfig `yaml:"healthcheck,omitempty"`
-	Slaves      []Slave            `yaml:"slaves"`
+	Name             string                  `yaml:"name"`
+	IP               string                  `yaml:"ip"`
+	Port             int                     `yaml:"port"`
+	Mode             string                  `yaml:"mode,omitempty"`
+	Flags            []string                `yaml:"flags,omitempty"`
+	Tags             map[string]string       `yaml:"tags,omitempty"`
+	Healthcheck      *HealthcheckConfig      `yaml:"healthcheck,omitempty"`
+	ReadOptimization *ReadOptimizationConfig `yaml:"read_optimization,omitempty"`
+	Slaves           []Slave                 `yaml:"slaves"`
+}
+
+type ReadOptimizationConfig struct {
+	Enabled       *bool `yaml:"enabled,omitempty"`
+	MaxBlockWords int   `yaml:"max_block_words,omitempty"`
+	MaxGapWords   int   `yaml:"max_gap_words,omitempty"`
 }
 
 func (d Device) TransportMode() string {
@@ -171,6 +178,31 @@ func DecodeResponseBytes(reg Register, resp []byte) ([]byte, error) {
 		return decodeCoilsResponse(reg, resp)
 	default:
 		return resp, nil
+	}
+}
+
+func SliceRegisterBytesFromBlock(block ReadBlock, item PlannedRegisterRead, raw []byte) ([]byte, error) {
+	switch item.Register.FunctionCode {
+	case 1:
+		// Coil slicing within aggregated blocks is intentionally unsupported for now.
+		return nil, fmt.Errorf("block slicing for function_code=1 is not supported")
+	default:
+		startWords := item.EffectiveAddress - block.StartAddress
+		if startWords < 0 {
+			return nil, fmt.Errorf("invalid negative slice offset for register %d", item.Register.Register)
+		}
+		startBytes := startWords * 2
+		endBytes := startBytes + ExpectedResponseBytes(item.Register)
+		if startBytes < 0 || endBytes > len(raw) {
+			return nil, fmt.Errorf(
+				"block slice out of bounds for register %d: start=%d end=%d len=%d",
+				item.Register.Register,
+				startBytes,
+				endBytes,
+				len(raw),
+			)
+		}
+		return raw[startBytes:endBytes], nil
 	}
 }
 
