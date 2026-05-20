@@ -22,16 +22,17 @@ type DeviceItem struct {
 }
 
 type Device struct {
-	Name             string                  `yaml:"name"`
-	IP               string                  `yaml:"ip"`
-	Port             int                     `yaml:"port"`
-	Mode             string                  `yaml:"mode,omitempty"`
-	TimeoutMs        int                     `yaml:"timeout_ms,omitempty"`
-	Flags            []string                `yaml:"flags,omitempty"`
-	Tags             map[string]string       `yaml:"tags,omitempty"`
-	Healthcheck      *HealthcheckConfig      `yaml:"healthcheck,omitempty"`
-	ReadOptimization *ReadOptimizationConfig `yaml:"read_optimization,omitempty"`
-	Slaves           []Slave                 `yaml:"slaves"`
+	Name                 string                  `yaml:"name"`
+	IP                   string                  `yaml:"ip"`
+	Port                 int                     `yaml:"port"`
+	Mode                 string                  `yaml:"mode,omitempty"`
+	TimeoutMs            int                     `yaml:"timeout_ms,omitempty"`
+	TransactionIDRetries *int                    `yaml:"transaction_id_retries,omitempty"`
+	Flags                []string                `yaml:"flags,omitempty"`
+	Tags                 map[string]string       `yaml:"tags,omitempty"`
+	Healthcheck          *HealthcheckConfig      `yaml:"healthcheck,omitempty"`
+	ReadOptimization     *ReadOptimizationConfig `yaml:"read_optimization,omitempty"`
+	Slaves               []Slave                 `yaml:"slaves"`
 }
 
 type ReadOptimizationConfig struct {
@@ -56,6 +57,24 @@ func (d Device) PollTimeout() time.Duration {
 		return 500 * time.Millisecond
 	}
 	return time.Duration(d.TimeoutMs) * time.Millisecond
+}
+
+func (d Device) TransactionIDRetryCount() int {
+	if d.TransactionIDRetries == nil {
+		return 1
+	}
+	if *d.TransactionIDRetries < 0 {
+		return 0
+	}
+	return *d.TransactionIDRetries
+}
+
+func IsTransactionIDMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "transaction id") && strings.Contains(msg, "does not match request")
 }
 
 type HealthcheckConfig struct {

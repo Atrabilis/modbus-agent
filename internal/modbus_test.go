@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -100,11 +101,73 @@ devices:
 	}
 }
 
+func TestLoadRegistersParsesTransactionIDRetries(t *testing.T) {
+	t.Parallel()
+
+	yaml := `plant: san_rafael
+devices:
+  - device:
+      name: "tracker"
+      ip: "192.168.1.11"
+      port: 502
+      transaction_id_retries: 3
+      slaves: []
+`
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write temp yaml: %v", err)
+	}
+
+	var cfg Devices
+	if err := LoadRegisters(path, &cfg); err != nil {
+		t.Fatalf("LoadRegisters failed: %v", err)
+	}
+
+	dev := cfg.Devices[0].Device
+	if dev.TransactionIDRetryCount() != 3 {
+		t.Fatalf("expected transaction_id_retries=3, got %d", dev.TransactionIDRetryCount())
+	}
+}
+
 func TestDevicePollTimeoutDefaultsTo500Milliseconds(t *testing.T) {
 	t.Parallel()
 
 	if got := (Device{}).PollTimeout(); got != 500*time.Millisecond {
 		t.Fatalf("expected default poll timeout 500ms, got %s", got)
+	}
+}
+
+func TestDeviceTransactionIDRetryCountDefaultsToOne(t *testing.T) {
+	t.Parallel()
+
+	if got := (Device{}).TransactionIDRetryCount(); got != 1 {
+		t.Fatalf("expected default transaction id retry count 1, got %d", got)
+	}
+}
+
+func TestDeviceTransactionIDRetryCountCanBeDisabled(t *testing.T) {
+	t.Parallel()
+
+	retries := 0
+	if got := (Device{TransactionIDRetries: &retries}).TransactionIDRetryCount(); got != 0 {
+		t.Fatalf("expected transaction id retry count 0, got %d", got)
+	}
+}
+
+func TestIsTransactionIDMismatch(t *testing.T) {
+	t.Parallel()
+
+	mismatchErr := errors.New("modbus: response transaction id '45932' does not match request '2'")
+	if !IsTransactionIDMismatch(mismatchErr) {
+		t.Fatal("expected transaction id mismatch to be detected")
+	}
+	if IsTransactionIDMismatch(errors.New("read tcp 127.0.0.1:502: i/o timeout")) {
+		t.Fatal("did not expect timeout to be detected as transaction id mismatch")
+	}
+	if IsTransactionIDMismatch(nil) {
+		t.Fatal("did not expect nil error to be detected")
 	}
 }
 

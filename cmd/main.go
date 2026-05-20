@@ -314,6 +314,20 @@ func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, stri
 		}
 
 		rawBlock, err := internal.ReadRegisters(session, blockReg, 0)
+		for attempt := 1; err != nil && attempt <= dev.TransactionIDRetryCount() && internal.IsTransactionIDMismatch(err); attempt++ {
+			fmt.Fprintf(
+				&out,
+				"    retrying read after transaction id mismatch attempt=%d/%d fc=%d addr=%d words=%d: %v\n",
+				attempt,
+				dev.TransactionIDRetryCount(),
+				blockReg.FunctionCode,
+				blockReg.Register,
+				blockReg.Words,
+				err,
+			)
+			session.SetSlaveID(byte(block.SlaveID))
+			rawBlock, err = internal.ReadRegisters(session, blockReg, 0)
+		}
 		if err != nil {
 			for _, item := range block.PlannedReads {
 				fmt.Fprintf(&out, "    read err fc=%d addr=%d words=%d: %v\n", item.Register.FunctionCode, item.Register.Register, item.Register.Words, err)

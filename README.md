@@ -121,6 +121,16 @@ timeout_ms: 2500
 
 If omitted, the default timeout is `500ms`. This timeout applies to normal polling reads and to the initial TCP connection attempt.
 
+## Transaction ID retry
+
+Some Modbus TCP gateways can return a late response with an unexpected transaction id. Each device may define how many times to retry that read:
+
+```yaml
+transaction_id_retries: 2
+```
+
+If omitted, the default is `1`. Set `0` to disable this retry. Other errors, such as regular TCP timeouts, are not retried by this setting.
+
 ## Read optimization
 
 Each device may define an optional `read_optimization` block:
