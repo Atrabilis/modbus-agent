@@ -67,6 +67,93 @@ devices:
 	}
 }
 
+func TestLoadRegistersParsesDeviceTimeout(t *testing.T) {
+	t.Parallel()
+
+	yaml := `plant: san_rafael
+devices:
+  - device:
+      name: "tracker"
+      ip: "192.168.1.11"
+      port: 502
+      timeout_ms: 2500
+      slaves: []
+`
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write temp yaml: %v", err)
+	}
+
+	var cfg Devices
+	if err := LoadRegisters(path, &cfg); err != nil {
+		t.Fatalf("LoadRegisters failed: %v", err)
+	}
+
+	dev := cfg.Devices[0].Device
+	if dev.TimeoutMs != 2500 {
+		t.Fatalf("expected timeout_ms=2500, got %d", dev.TimeoutMs)
+	}
+	if got := dev.PollTimeout(); got != 2500*time.Millisecond {
+		t.Fatalf("expected poll timeout 2500ms, got %s", got)
+	}
+}
+
+func TestDevicePollTimeoutDefaultsTo500Milliseconds(t *testing.T) {
+	t.Parallel()
+
+	if got := (Device{}).PollTimeout(); got != 500*time.Millisecond {
+		t.Fatalf("expected default poll timeout 500ms, got %s", got)
+	}
+}
+
+func TestNewPollSessionUsesConfiguredTCPTimeout(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+		close(accepted)
+	}()
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("atoi port: %v", err)
+	}
+
+	session, err := NewPollSession(Device{
+		Name:      "tracker",
+		IP:        host,
+		Port:      port,
+		TimeoutMs: 2300,
+	})
+	if err != nil {
+		t.Fatalf("new poll session: %v", err)
+	}
+	defer session.Close()
+	if conn := <-accepted; conn != nil {
+		defer conn.Close()
+	}
+
+	if got := session.Timeout(); got != 2300*time.Millisecond {
+		t.Fatalf("expected configured TCP timeout 2300ms, got %s", got)
+	}
+}
+
 func TestMergeTagsAddsPlantWhenMissing(t *testing.T) {
 	t.Parallel()
 
@@ -230,15 +317,19 @@ func TestRTUOverTCPSessionReadHoldingRegisters(t *testing.T) {
 	}
 
 	session, err := NewPollSession(Device{
-		Name: "tracker",
-		IP:   host,
-		Port: port,
-		Mode: "rtu_over_tcp",
+		Name:      "tracker",
+		IP:        host,
+		Port:      port,
+		Mode:      "rtu_over_tcp",
+		TimeoutMs: 1700,
 	})
 	if err != nil {
 		t.Fatalf("new poll session: %v", err)
 	}
 	defer session.Close()
+	if got := session.Timeout(); got != 1700*time.Millisecond {
+		t.Fatalf("expected configured RTU-over-TCP timeout 1700ms, got %s", got)
+	}
 	session.SetSlaveID(7)
 
 	resp, err := session.ReadHoldingRegisters(151, 1)

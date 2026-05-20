@@ -24,20 +24,21 @@ type PollSession interface {
 
 func NewPollSession(dev Device) (PollSession, error) {
 	addr := net.JoinHostPort(dev.IP, strconv.Itoa(dev.Port))
+	timeout := dev.PollTimeout()
 
 	switch dev.TransportMode() {
 	case "rtu_over_tcp":
-		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		conn, err := net.DialTimeout("tcp", addr, timeout)
 		if err != nil {
 			return nil, fmt.Errorf("unable to connect to Modbus RTU-over-TCP endpoint %s: %w", addr, err)
 		}
 		return &rtuOverTCPSession{
 			conn:    conn,
-			timeout: 500 * time.Millisecond,
+			timeout: timeout,
 		}, nil
 	default:
 		handler := modbus.NewTCPClientHandler(addr)
-		handler.Timeout = 500 * time.Millisecond
+		handler.Timeout = timeout
 		if err := handler.Connect(); err != nil {
 			return nil, fmt.Errorf("unable to connect to Modbus TCP endpoint %s: %w", addr, err)
 		}

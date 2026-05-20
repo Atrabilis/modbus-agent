@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -25,6 +26,7 @@ type Device struct {
 	IP               string                  `yaml:"ip"`
 	Port             int                     `yaml:"port"`
 	Mode             string                  `yaml:"mode,omitempty"`
+	TimeoutMs        int                     `yaml:"timeout_ms,omitempty"`
 	Flags            []string                `yaml:"flags,omitempty"`
 	Tags             map[string]string       `yaml:"tags,omitempty"`
 	Healthcheck      *HealthcheckConfig      `yaml:"healthcheck,omitempty"`
@@ -47,6 +49,13 @@ func (d Device) TransportMode() string {
 	default:
 		return "tcp"
 	}
+}
+
+func (d Device) PollTimeout() time.Duration {
+	if d.TimeoutMs <= 0 {
+		return 500 * time.Millisecond
+	}
+	return time.Duration(d.TimeoutMs) * time.Millisecond
 }
 
 type HealthcheckConfig struct {

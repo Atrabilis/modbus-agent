@@ -111,6 +111,16 @@ skip_healthcheck: true
 
 This is useful when multiple logical slaves share the same physical endpoint and a repeated probe is unnecessary.
 
+## Poll timeout
+
+Each device may define a Modbus request timeout:
+
+```yaml
+timeout_ms: 2500
+```
+
+If omitted, the default timeout is `500ms`. This timeout applies to normal polling reads and to the initial TCP connection attempt.
+
 ## Read optimization
 
 Each device may define an optional `read_optimization` block:
