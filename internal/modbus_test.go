@@ -533,3 +533,48 @@ func TestPlanReadBlocksRespectsConfiguredGapLimit(t *testing.T) {
 		t.Fatalf("unexpected block range start=%d words=%d", blocks[0].StartAddress, blocks[0].WordCount)
 	}
 }
+
+func TestSliceRegisterBytesFromBlockSupportsFC1(t *testing.T) {
+	t.Parallel()
+
+	block := ReadBlock{
+		SlaveID:      1,
+		FunctionCode: 1,
+		StartAddress: 8300,
+		WordCount:    1,
+	}
+	item := PlannedRegisterRead{
+		Slave:            Slave{Name: "logo8", SlaveID: 1},
+		Register:         Register{Register: 8300, FunctionCode: 1, Words: 1, Datatype: "U16", Name: "switch_state_1"},
+		EffectiveAddress: 8300,
+	}
+
+	got, err := SliceRegisterBytesFromBlock(block, item, []byte{0x01})
+	if err != nil {
+		t.Fatalf("SliceRegisterBytesFromBlock returned error: %v", err)
+	}
+	if len(got) != 1 || got[0] != 0x01 {
+		t.Fatalf("unexpected FC1 sliced bytes: % x", got)
+	}
+}
+
+func TestSliceRegisterBytesFromBlockFC1TooShort(t *testing.T) {
+	t.Parallel()
+
+	block := ReadBlock{
+		SlaveID:      1,
+		FunctionCode: 1,
+		StartAddress: 8300,
+		WordCount:    9,
+	}
+	item := PlannedRegisterRead{
+		Slave:            Slave{Name: "logo8", SlaveID: 1},
+		Register:         Register{Register: 8300, FunctionCode: 1, Words: 9, Datatype: "U16", Name: "switch_bits"},
+		EffectiveAddress: 8300,
+	}
+
+	_, err := SliceRegisterBytesFromBlock(block, item, []byte{0x01})
+	if err == nil {
+		t.Fatal("expected error for short FC1 response, got nil")
+	}
+}

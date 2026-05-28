@@ -212,8 +212,21 @@ func DecodeResponseBytes(reg Register, resp []byte) ([]byte, error) {
 func SliceRegisterBytesFromBlock(block ReadBlock, item PlannedRegisterRead, raw []byte) ([]byte, error) {
 	switch item.Register.FunctionCode {
 	case 1:
-		// Coil slicing within aggregated blocks is intentionally unsupported for now.
-		return nil, fmt.Errorf("block slicing for function_code=1 is not supported")
+		// FC1 responses are bit-packed bytes, so word-based offsets used for FC3/FC4 do not apply.
+		// Read planning keeps FC1 registers as standalone blocks; return the exact expected byte span.
+		want := ExpectedResponseBytes(item.Register)
+		if want <= 0 {
+			return nil, fmt.Errorf("invalid expected response size for function_code=1 at register %d", item.Register.Register)
+		}
+		if len(raw) < want {
+			return nil, fmt.Errorf(
+				"block slice out of bounds for function_code=1 register %d: want=%d len=%d",
+				item.Register.Register,
+				want,
+				len(raw),
+			)
+		}
+		return raw[:want], nil
 	default:
 		startWords := item.EffectiveAddress - block.StartAddress
 		if startWords < 0 {
