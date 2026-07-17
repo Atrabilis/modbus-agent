@@ -56,7 +56,7 @@ func PlanReadBlocks(dev Device) []ReadBlock {
 			continue
 		}
 
-		if item.Register.FunctionCode == 1 {
+		if item.Register.FunctionCode == 1 || item.Register.FunctionCode == 2 {
 			blocks = append(blocks, ReadBlock{
 				SlaveID:      item.Slave.SlaveID,
 				FunctionCode: item.Register.FunctionCode,

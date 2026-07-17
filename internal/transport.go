@@ -13,6 +13,7 @@ import (
 
 type PollSession interface {
 	ReadCoils(address, quantity uint16) (results []byte, err error)
+	ReadDiscreteInputs(address, quantity uint16) (results []byte, err error)
 	ReadHoldingRegisters(address, quantity uint16) (results []byte, err error)
 	ReadInputRegisters(address, quantity uint16) (results []byte, err error)
 	SetSlaveID(id byte)
@@ -58,6 +59,10 @@ func (s *tcpPollSession) ReadCoils(address, quantity uint16) ([]byte, error) {
 	return s.client.ReadCoils(address, quantity)
 }
 
+func (s *tcpPollSession) ReadDiscreteInputs(address, quantity uint16) ([]byte, error) {
+	return s.client.ReadDiscreteInputs(address, quantity)
+}
+
 func (s *tcpPollSession) ReadHoldingRegisters(address, quantity uint16) ([]byte, error) {
 	return s.client.ReadHoldingRegisters(address, quantity)
 }
@@ -94,6 +99,10 @@ type rtuOverTCPSession struct {
 
 func (s *rtuOverTCPSession) ReadCoils(address, quantity uint16) ([]byte, error) {
 	return s.readFrame(1, address, quantity)
+}
+
+func (s *rtuOverTCPSession) ReadDiscreteInputs(address, quantity uint16) ([]byte, error) {
+	return s.readFrame(2, address, quantity)
 }
 
 func (s *rtuOverTCPSession) ReadHoldingRegisters(address, quantity uint16) ([]byte, error) {

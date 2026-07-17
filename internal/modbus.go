@@ -170,6 +170,7 @@ func LoadRegisters(path string, devices *Devices) error {
 
 func ReadRegisters(client interface {
 	ReadCoils(address, quantity uint16) (results []byte, err error)
+	ReadDiscreteInputs(address, quantity uint16) (results []byte, err error)
 	ReadHoldingRegisters(address, quantity uint16) (results []byte, err error)
 	ReadInputRegisters(address, quantity uint16) (results []byte, err error)
 }, reg Register, offset int) ([]byte, error) {
@@ -179,6 +180,8 @@ func ReadRegisters(client interface {
 	switch reg.FunctionCode {
 	case 1:
 		return client.ReadCoils(address, quantity)
+	case 2:
+		return client.ReadDiscreteInputs(address, quantity)
 	case 0, 3:
 		return client.ReadHoldingRegisters(address, quantity)
 	case 4:
@@ -190,7 +193,7 @@ func ReadRegisters(client interface {
 
 func ExpectedResponseBytes(reg Register) int {
 	switch reg.FunctionCode {
-	case 1:
+	case 1, 2:
 		if reg.Words <= 0 {
 			return 0
 		}
@@ -202,7 +205,7 @@ func ExpectedResponseBytes(reg Register) int {
 
 func DecodeResponseBytes(reg Register, resp []byte) ([]byte, error) {
 	switch reg.FunctionCode {
-	case 1:
+	case 1, 2:
 		return decodeCoilsResponse(reg, resp)
 	default:
 		return resp, nil
@@ -211,16 +214,17 @@ func DecodeResponseBytes(reg Register, resp []byte) ([]byte, error) {
 
 func SliceRegisterBytesFromBlock(block ReadBlock, item PlannedRegisterRead, raw []byte) ([]byte, error) {
 	switch item.Register.FunctionCode {
-	case 1:
-		// FC1 responses are bit-packed bytes, so word-based offsets used for FC3/FC4 do not apply.
-		// Read planning keeps FC1 registers as standalone blocks; return the exact expected byte span.
+	case 1, 2:
+		// FC1/FC2 responses are bit-packed bytes, so word-based offsets used for FC3/FC4 do not apply.
+		// Read planning keeps FC1/FC2 registers as standalone blocks; return the exact expected byte span.
 		want := ExpectedResponseBytes(item.Register)
 		if want <= 0 {
-			return nil, fmt.Errorf("invalid expected response size for function_code=1 at register %d", item.Register.Register)
+			return nil, fmt.Errorf("invalid expected response size for function_code=%d at register %d", item.Register.FunctionCode, item.Register.Register)
 		}
 		if len(raw) < want {
 			return nil, fmt.Errorf(
-				"block slice out of bounds for function_code=1 register %d: want=%d len=%d",
+				"block slice out of bounds for function_code=%d register %d: want=%d len=%d",
+				item.Register.FunctionCode,
 				item.Register.Register,
 				want,
 				len(raw),
@@ -285,7 +289,7 @@ func decodeCoilsResponse(reg Register, resp []byte) ([]byte, error) {
 		if reg.Words == 1 {
 			return []byte{0, byte(bitmask)}, nil
 		}
-		return nil, fmt.Errorf("datatype=%q is not supported for function_code=1 at register %d", reg.Datatype, reg.Register)
+		return nil, fmt.Errorf("datatype=%q is not supported for function_code=%d at register %d", reg.Datatype, reg.FunctionCode, reg.Register)
 	}
 }
 

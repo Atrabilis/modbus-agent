@@ -258,6 +258,10 @@ func (f *fakeSession) ReadCoils(address, quantity uint16) ([]byte, error) {
 	return nil, nil
 }
 
+func (f *fakeSession) ReadDiscreteInputs(address, quantity uint16) ([]byte, error) {
+	return nil, nil
+}
+
 func (f *fakeSession) ReadHoldingRegisters(address, quantity uint16) ([]byte, error) {
 	return nil, nil
 }
@@ -576,5 +580,61 @@ func TestSliceRegisterBytesFromBlockFC1TooShort(t *testing.T) {
 	_, err := SliceRegisterBytesFromBlock(block, item, []byte{0x01})
 	if err == nil {
 		t.Fatal("expected error for short FC1 response, got nil")
+	}
+}
+
+func TestSliceRegisterBytesFromBlockSupportsFC2(t *testing.T) {
+	t.Parallel()
+
+	block := ReadBlock{
+		SlaveID:      1,
+		FunctionCode: 2,
+		StartAddress: 0,
+		WordCount:    1,
+	}
+	item := PlannedRegisterRead{
+		Slave:            Slave{Name: "smp10", SlaveID: 1},
+		Register:         Register{Register: 0, FunctionCode: 2, Words: 1, Datatype: "U16", Name: "sensor1_disconnected"},
+		EffectiveAddress: 0,
+	}
+
+	got, err := SliceRegisterBytesFromBlock(block, item, []byte{0x02})
+	if err != nil {
+		t.Fatalf("SliceRegisterBytesFromBlock returned error: %v", err)
+	}
+	if len(got) != 1 || got[0] != 0x02 {
+		t.Fatalf("unexpected FC2 sliced bytes: % x", got)
+	}
+}
+
+func TestReadRegistersDispatchesFC2(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeSession{}
+	_, err := ReadRegisters(client, Register{Register: 5, FunctionCode: 2, Words: 1}, 0)
+	if err != nil {
+		t.Fatalf("ReadRegisters returned error for FC2: %v", err)
+	}
+}
+
+func TestExpectedResponseBytesFC2(t *testing.T) {
+	t.Parallel()
+
+	got := ExpectedResponseBytes(Register{FunctionCode: 2, Words: 10})
+	if got != 2 {
+		t.Fatalf("expected 2 bytes for 10 FC2 bits, got %d", got)
+	}
+}
+
+func TestDecodeResponseBytesFC2(t *testing.T) {
+	t.Parallel()
+
+	reg := Register{FunctionCode: 2, Words: 3, Datatype: "U16"}
+	got, err := DecodeResponseBytes(reg, []byte{0x05})
+	if err != nil {
+		t.Fatalf("DecodeResponseBytes returned error for FC2: %v", err)
+	}
+	if len(got) != 2 || got[0] != 0 || got[1] != 5 {
+		t.Fatalf("unexpected FC2 decoded bitmask: % x", got)
 	}
 }
