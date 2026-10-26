@@ -35,6 +35,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Do not publish binaries from a commit whose tests fail.
+      - name: Test
+        run: go test ./...
+
       - name: Build binary
         env:
           GOOS: linux

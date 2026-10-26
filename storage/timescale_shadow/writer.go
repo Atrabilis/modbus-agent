@@ -241,6 +241,17 @@ func shouldSkipPayloadField(name string) bool {
 func normalizeValue(v interface{}) interface{} {
 	switch x := v.(type) {
 	case float64:
+		// JSON has no NaN or infinity, so json.Marshal would fail and the whole
+		// row would be dropped. Send them as the strings PostgreSQL accepts for
+		// double precision; the device's own "no value" marker is kept as-is.
+		switch {
+		case math.IsNaN(x):
+			return "NaN"
+		case math.IsInf(x, 1):
+			return "Infinity"
+		case math.IsInf(x, -1):
+			return "-Infinity"
+		}
 		if isWholeNumber(x) && x >= math.MinInt64 && x <= math.MaxInt64 {
 			return int64(x)
 		}
