@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## nightly-20261026-config-validation (2026-10-26)
 
 ### Fixed
 
