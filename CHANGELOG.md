@@ -12,3 +12,4 @@
 - Tests for the shadow payload (`storage/timescale_shadow/writer_test.go`).
 - README: "How values are represented" and "Testing" sections.
 - CI: new `ci` workflow runs `go vet ./...` and `go test ./...` on every push and pull request; the `release` workflow now runs the tests before building binaries.
+- CI: GitHub Actions updated to their current majors, all on Node 24 (`checkout` v7, `setup-go` v7, `upload-artifact` v7, `download-artifact` v8, `action-gh-release` v3). `download-artifact` v8 now fails on a hash mismatch instead of warning.
