@@ -326,7 +326,8 @@ The row contains:
 | The register read or decode fails | Nothing for that field: the column stays `NULL` (aggregates such as `avg`/`max` ignore it) |
 | The device sends its own "no value" marker (for example SMA/SunSpec `0x8000` for `int16`, `0xFFFFFFFF` for `uint32`) | The decoded value as-is, after `gain`. The agent does not translate device sentinels; exclude them in queries, e.g. `avg(nullif(col, -2147483648))` |
 | A float register (`F32BE`) is IEEE NaN or infinity | `timescaledb_shadow`: sent in the JSON payload as the strings `"NaN"`, `"Infinity"` or `"-Infinity"`, which PostgreSQL turns into the same `double precision` values. `timescaledb`: written directly as a float |
-| The datatype is not supported | Nothing for that field; the run log shows `unknown datatype="..."` |
+| The datatype is not supported | Nothing for that field; the run log shows `unknown datatype="..."` (with config validation, the register is skipped at load time) |
+| A text register (`STR`, `UTF8`) has bytes that are not valid UTF-8 | Each invalid byte becomes U+FFFD (`\uFFFD`), the same replacement `encoding/json` applies, so the text is identical through every storage output and PostgreSQL accepts it |
 
 JSON cannot represent NaN or infinity. Before this mapping, one such value made the whole shadow row fail to encode and every field of that device and timestamp was lost.
 
@@ -418,6 +419,9 @@ go test ./...
 ```bash
 go test -run '^$' -fuzz='^FuzzDecode32$' -fuzztime=30s ./cmd
 go test -run '^$' -fuzz='^FuzzDecode64$' -fuzztime=30s ./cmd
+go test -run '^$' -fuzz='^FuzzDecodeText$' -fuzztime=30s ./cmd
 ```
 
-The tests document current behavior that callers should know about: a buffer shorter than the datatype needs decodes as `0`, NaN and infinity are returned as valid floats, invalid UTF-8 in text registers passes through unchanged, and 64-bit integers are exact only up to 2^53 because values are returned as `float64`.
+`FuzzDecodeText` compares the text decoder with an `encoding/json` round trip for arbitrary bytes.
+
+The tests document current behavior that callers should know about: a buffer shorter than the datatype needs decodes as `0`, NaN and infinity are returned as valid floats, and 64-bit integers are exact only up to 2^53 because values are returned as `float64`.

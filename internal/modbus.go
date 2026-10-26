@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -333,7 +334,23 @@ func UTF8(b []byte) string {
 	}
 	// Remove trailing NUL padding if any remains.
 	b = bytes.TrimRight(b, "\x00")
-	return string(b)
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	// PostgreSQL text columns reject invalid UTF-8. Replace each invalid byte
+	// with U+FFFD, exactly as encoding/json does, so a string reads the same
+	// whether it is written directly or through the JSON shadow payload.
+	var sb strings.Builder
+	for len(b) > 0 {
+		r, size := utf8.DecodeRune(b)
+		if r == utf8.RuneError && size == 1 {
+			sb.WriteRune(utf8.RuneError)
+		} else {
+			sb.Write(b[:size])
+		}
+		b = b[size:]
+	}
+	return sb.String()
 }
 
 func U32LE(b []byte) uint32 {

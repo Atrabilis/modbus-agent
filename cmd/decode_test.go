@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -276,17 +278,60 @@ func TestDecodeTextTypes(t *testing.T) {
 	}
 }
 
-// Bytes that are not valid UTF-8 are passed through unchanged. Documented
-// because a PostgreSQL text column rejects invalid UTF-8.
-func TestDecodeTextInvalidUTF8PassesThrough(t *testing.T) {
-	got, ok := decode(t, "STR", 1, []byte{'O', 'K', 0xFF, 0xFE})
-	s, isString := got.(string)
-	if !ok || !isString || s != "OK\xff\xfe" {
-		t.Fatalf("got (%q, %v)", got, ok)
+// A PostgreSQL text column rejects invalid UTF-8, so each invalid byte becomes
+// U+FFFD, the same replacement encoding/json applies on the shadow path.
+func TestDecodeTextReplacesInvalidUTF8(t *testing.T) {
+	cases := []struct {
+		raw  []byte
+		want string
+	}{
+		{[]byte{'O', 'K', 0xFF, 0xFE}, "OK��"},
+		{[]byte{0xC3, 0xA1, 'b', 'c'}, "ábc"},        // valid 2-byte rune is kept
+		{[]byte{'a', 0xC3, 'b'}, "a�b"},              // truncated multi-byte sequence
+		{[]byte{0xE2, 0x82, 0xAC, 0xFF, 0, 0}, "€�"}, // valid rune, invalid byte, NUL padding
 	}
-	if utf8.ValidString(s) {
-		t.Fatalf("expected the result to be invalid UTF-8")
+	for _, datatype := range []string{"STR", "UTF8"} {
+		for _, c := range cases {
+			got, ok := decode(t, datatype, 1, c.raw)
+			if !ok || got != c.want {
+				t.Fatalf("%s % x: got (%q, %v), want %q", datatype, c.raw, got, ok, c.want)
+			}
+		}
 	}
+}
+
+// For any input the decoded text is valid UTF-8, has no NUL, and is exactly
+// what the JSON shadow payload would store for the same bytes.
+func FuzzDecodeText(f *testing.F) {
+	f.Add([]byte("SN0000000A1\x00\x00"))
+	f.Add([]byte{'O', 'K', 0xFF, 0xFE})
+	f.Add([]byte{0xED, 0xA0, 0x80}) // UTF-16 surrogate, invalid in UTF-8
+	f.Add([]byte{0xF4, 0x90, 0x80, 0x80})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		got, ok := decode(t, "STR", 1, raw)
+		s, isString := got.(string)
+		if !ok || !isString {
+			t.Fatalf("got (%v, %v)", got, ok)
+		}
+		if !utf8.ValidString(s) || strings.ContainsRune(s, 0) {
+			t.Fatalf("result %q is not clean UTF-8", s)
+		}
+		cut := raw
+		if i := bytes.IndexByte(cut, 0); i >= 0 {
+			cut = cut[:i]
+		}
+		encoded, err := json.Marshal(string(cut))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var viaJSON string
+		if err := json.Unmarshal(encoded, &viaJSON); err != nil {
+			t.Fatal(err)
+		}
+		if s != viaJSON {
+			t.Fatalf("decoder %q differs from the JSON path %q for % x", s, viaJSON, raw)
+		}
+	})
 }
 
 func TestDecodeHEXAllByteValues(t *testing.T) {
