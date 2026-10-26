@@ -51,7 +51,7 @@ jobs:
             -trimpath \
             -ldflags="-s -w" \
             -o dist/modbus-agent-linux-${{ matrix.arch }} \
-            ./cmd/main.go
+            ./cmd
 
       - name: Generate sha256
         run: |

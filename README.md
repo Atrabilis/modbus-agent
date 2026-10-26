@@ -371,6 +371,25 @@ go run ./cmd \
 
 When `--interrogateOnly` is used, the agent polls and decodes values but does not write to any configured storage output.
 
+Configuration check (no dotenv file, no network):
+
+```bash
+go run ./cmd --configPath /path/to/config.yml --checkConfig
+```
+
+It exits with status 0 when every register can be decoded and 1 otherwise, printing one `INVALID ...` line per problem. Deploy tooling should run it before installing a config, so a typo fails the deploy instead of silently dropping data.
+
+### Register validation
+
+Every register is checked when the config is loaded:
+
+- `datatype` must be one the decoder supports (case-sensitive): `U8`, `U16`, `S16`, `U32`, `S32`, `U32LE`, `S32LE`, `F32BE`, `U64BE`, `S64BE`, `STR`, `UTF8`, `HEX`.
+- `function_code` must be 0, 1, 2, 3 or 4 (0 reads holding registers, like 3).
+- For function codes 0, 3 and 4, `words` must cover the datatype: 2 for 32-bit types, 4 for 64-bit types, at least 1 otherwise.
+- For function codes 1 and 2, `words` is the number of coils/inputs: at least 1, at most 8 for `U8`, 16 for `U16`/`S16` and 32 for the 32-bit types; floats and 64-bit types cannot hold coils.
+
+In a normal run an invalid register is skipped with `WARNING: skipping invalid register ...` once per run and the rest of the device is still read. With `--checkConfig` the same problems make the check fail.
+
 ## End-of-run counters
 
 At the end of each run, the agent prints:

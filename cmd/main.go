@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ var (
 	configPath      = flag.String("configPath", "", "Path to the config file")
 	envPath         = flag.String("envPath", "/etc/atamostec/modbus-agent/modbus-agent.env", "Path to the dotenv file")
 	interrogateOnly = flag.Bool("interrogateOnly", false, "Read devices without writing to configured storage outputs")
+	checkConfig     = flag.Bool("checkConfig", false, "Validate the register configuration and exit (status 1 if a register cannot be decoded)")
 )
 
 type storageWriter interface {
@@ -388,6 +390,12 @@ func main() {
 		log.Fatalf("Registers file path is required")
 	}
 
+	// Validation needs neither the dotenv file nor network access, so it can
+	// run on the deploy host before the config is installed.
+	if *checkConfig {
+		os.Exit(runCheckConfig(*configPath))
+	}
+
 	if err := dotenv.Load(*envPath); err != nil {
 		log.Fatalf("Error loading .env file: %v", err)
 	}
@@ -399,6 +407,12 @@ func main() {
 	var devices internal.Devices
 	if err := internal.LoadRegisters(*configPath, &devices); err != nil {
 		log.Fatalf("Error loading registers file: %v", err)
+	}
+	// Skip registers that cannot be decoded instead of dropping their values on
+	// every read; the rest of the device is still collected.
+	devices, registerIssues := internal.ValidateDevices(devices)
+	for _, issue := range registerIssues {
+		fmt.Printf("WARNING: skipping invalid register %s\n", issue)
 	}
 
 	var writers []storageWriter

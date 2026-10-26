@@ -18,6 +18,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Build the binary the same way the release does: go test compiles whole
+      # packages, so it would not notice a release build that only fails there.
+      - name: Build
+        run: go build -o /dev/null ./cmd
+
       - name: Vet
         run: go vet ./...
 
