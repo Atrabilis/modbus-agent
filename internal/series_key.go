@@ -8,7 +8,7 @@ import (
 )
 
 // BuildSeriesMetadata builds a stable per-series key and returns the filtered
-// dynamic tags to persist as JSONB flags in Timescale.
+// dynamic tags to persist as JSONB flags in the PostgreSQL outputs.
 //
 // When no dynamic tags are present, series_key is "default" and flags is {}.
 func BuildSeriesMetadata(tags map[string]string) (string, map[string]string) {

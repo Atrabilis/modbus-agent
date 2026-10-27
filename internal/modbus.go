@@ -14,8 +14,32 @@ import (
 )
 
 type Devices struct {
-	Plant   string       `yaml:"plant"`
-	Devices []DeviceItem `yaml:"devices"`
+	Plant string `yaml:"plant"`
+	// TimestampResolution is the step every sample timestamp is rounded down
+	// to, as a Go duration ("1m", "10s"). "0s" keeps the exact read time.
+	// Rows are keyed by timestamp, so it must not be shorter than the polling
+	// interval or a later run in the same step overwrites the earlier one.
+	TimestampResolution string       `yaml:"timestamp_resolution,omitempty"`
+	Devices             []DeviceItem `yaml:"devices"`
+}
+
+// DefaultTimestampResolution matches the one-minute systemd timer.
+const DefaultTimestampResolution = time.Minute
+
+// Resolution parses TimestampResolution; empty means the default.
+func (d Devices) Resolution() (time.Duration, error) {
+	raw := strings.TrimSpace(d.TimestampResolution)
+	if raw == "" {
+		return DefaultTimestampResolution, nil
+	}
+	res, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("timestamp_resolution %q: %w", raw, err)
+	}
+	if res < 0 {
+		return 0, fmt.Errorf("timestamp_resolution %q: must not be negative", raw)
+	}
+	return res, nil
 }
 
 type DeviceItem struct {
@@ -415,7 +439,7 @@ func MergeTags(plant string, dev *Device, slave *Slave, reg *Register) map[strin
 	if out["plant"] == "" && strings.TrimSpace(plant) != "" {
 		out["plant"] = strings.TrimSpace(plant)
 	}
-	// Canonical identifiers used by Timescale writer.
+	// Canonical identifiers used by the PostgreSQL writers.
 	if out["device_name"] == "" && dev.Name != "" {
 		out["device_name"] = dev.Name
 	}
@@ -425,7 +449,7 @@ func MergeTags(plant string, dev *Device, slave *Slave, reg *Register) map[strin
 	if out["slave_id"] == "" {
 		out["slave_id"] = strconv.Itoa(slave.SlaveID)
 	}
-	// Backward-compatible aliases for existing Influx dashboards/queries.
+	// Legacy aliases; the writers still read them as fallbacks.
 	if out["device"] == "" && out["device_name"] != "" {
 		out["device"] = out["device_name"]
 	}

@@ -41,6 +41,18 @@ devices:
               words: 2
               datatype: U32LE
               gain: 0.1
+storage:
+  outputs:
+    - name: local_shadow
+      type: postgres_shadow
+      postgres_shadow:
+        host_env: PG_HOST
+        port_env: PG_PORT
+        user_env: PG_USER
+        password_env: PG_PASSWORD
+        database_env: PG_DB
+        schema: edge
+        table: logger_shadow
 `
 
 const invalidConfig = `
@@ -67,6 +79,18 @@ devices:
               name: frequency
               words: 1
               datatype: U16
+storage:
+  outputs:
+    - name: local_shadow
+      type: postgres_shadow
+      postgres_shadow:
+        host_env: PG_HOST
+        port_env: PG_PORT
+        user_env: PG_USER
+        password_env: PG_PASSWORD
+        database_env: PG_DB
+        schema: edge
+        table: logger_shadow
 `
 
 func writeConfig(t *testing.T, content string) string {
@@ -115,5 +139,68 @@ func TestCheckConfigUnreadableFile(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "cannot load registers file") {
 		t.Fatalf("output: %q", out.String())
+	}
+}
+
+func TestCheckConfigStorageAndResolution(t *testing.T) {
+	cases := []struct {
+		name     string
+		config   string
+		wantCode int
+		want     string
+	}{
+		{
+			name:     "legacy type name only warns",
+			config:   strings.Replace(strings.Replace(validConfig, "type: postgres_shadow", "type: timescaledb_shadow", 1), "postgres_shadow:", "timescaledb_shadow:", 1),
+			wantCode: 0,
+			want:     `WARNING: storage output "local_shadow" uses type "timescaledb_shadow", renamed to "postgres_shadow"`,
+		},
+		{
+			name:     "removed influxdb2 output",
+			config:   strings.Replace(validConfig, "type: postgres_shadow", "type: influxdb2", 1),
+			wantCode: 1,
+			want:     `unsupported type "influxdb2"`,
+		},
+		{
+			name:     "missing connection field",
+			config:   strings.Replace(validConfig, "        table: logger_shadow\n", "", 1),
+			wantCode: 1,
+			want:     "postgres_shadow.table is empty",
+		},
+		{
+			name:     "no storage section",
+			config:   validConfig[:strings.Index(validConfig, "storage:")],
+			wantCode: 1,
+			want:     "INVALID storage: storage.outputs is empty",
+		},
+		{
+			name:     "valid timestamp resolution",
+			config:   strings.Replace(validConfig, "plant: plant_a", "plant: plant_a\ntimestamp_resolution: 10s", 1),
+			wantCode: 0,
+			want:     "2 registers OK",
+		},
+		{
+			name:     "invalid timestamp resolution",
+			config:   strings.Replace(validConfig, "plant: plant_a", "plant: plant_a\ntimestamp_resolution: 1 minute", 1),
+			wantCode: 1,
+			want:     `INVALID timestamp_resolution "1 minute"`,
+		},
+		{
+			name:     "negative timestamp resolution",
+			config:   strings.Replace(validConfig, "plant: plant_a", "plant: plant_a\ntimestamp_resolution: -1m", 1),
+			wantCode: 1,
+			want:     "must not be negative",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			if code := validateConfigFile(writeConfig(t, tc.config), &out); code != tc.wantCode {
+				t.Fatalf("exit %d, want %d; output:\n%s", code, tc.wantCode, out.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("output missing %q:\n%s", tc.want, out.String())
+			}
+		})
 	}
 }

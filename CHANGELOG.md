@@ -2,7 +2,19 @@
 
 ## Unreleased
 
+### Changed
+
+- Storage outputs renamed to what they are: `timescaledb_shadow` -> `postgres_shadow` and `timescaledb` -> `postgres` (neither uses TimescaleDB features; both run on plain PostgreSQL). The old names are still accepted, as `type:` and as the settings block, with a `WARNING: ... renamed to ...` in the run log. Packages renamed to `storage/postgres_shadow` and `storage/postgres`.
+- An unknown storage output type is rejected when the config is loaded, so `--checkConfig` reports it before deploy. `--checkConfig` now also checks the storage outputs (type, required settings, at least one enabled) and `timestamp_resolution`.
+
+### Removed
+
+- InfluxDB output (`influxdb2`) and the `influxdb-client-go` dependency. The last two production configs that used it pointed at a decommissioned server and had already been changed to drop it.
+
 ### Added
+
+- `timestamp_resolution` (top level of the config, a Go duration, default `1m`): the step every sample timestamp is rounded down to. Before, one minute was hard-coded.
+- `sql/postgres_shadow.sql` and `sql/postgres_example.sql`: table layouts for each output; the agent does not create tables.
 
 - Tests for `pollDevice` against fake Modbus endpoints (`cmd/poll_test.go`): every datatype read in blocks with gains and slave offset, coils and input registers, an exception in one block, healthcheck with `skip_device` and `fail_run`, read timeout, unreachable endpoint, transaction id mismatch with and without retry, and RTU over TCP. Regular cases use the server from `github.com/simonvetter/modbus` (MIT, test-only dependency: it is not compiled into the agent binary); the transaction id and RTU cases use minimal servers written in the test.
 - End-to-end test (`cmd/e2e_test.go`): builds the agent binary, runs it with a config and a dotenv file against the fake Modbus server and PostgreSQL, and checks the rows in a shadow table with the production layout, including a NaN register, an invalid register that must be skipped, and a second run that must upsert. Skipped unless `MODBUS_AGENT_E2E_PG` is set.

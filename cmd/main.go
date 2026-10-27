@@ -13,9 +13,8 @@ import (
 
 	"github.com/atrabilis/modbus-agent/internal"
 	"github.com/atrabilis/modbus-agent/storage"
-	"github.com/atrabilis/modbus-agent/storage/influx"
-	"github.com/atrabilis/modbus-agent/storage/timescale"
-	"github.com/atrabilis/modbus-agent/storage/timescale_shadow"
+	"github.com/atrabilis/modbus-agent/storage/postgres"
+	"github.com/atrabilis/modbus-agent/storage/postgres_shadow"
 
 	dotenv "github.com/joho/godotenv"
 )
@@ -82,9 +81,9 @@ func (s *countingPollSession) FailedRequestCount() int {
 	return s.failedRequests
 }
 
-const timescaleWriteWorkers = 8
+const postgresWriteWorkers = 8
 
-func aggregateSamplesForTimescale(samples []sample) []sample {
+func aggregateSamplesForPostgres(samples []sample) []sample {
 	rowsByKey := make(map[string]*sample, len(samples))
 	order := make([]string, 0, len(samples))
 
@@ -199,9 +198,9 @@ func writeSamplesWithWorkers(w storageWriter, rows []sample, workers int) {
 	wg.Wait()
 }
 
-func isTimescaleLikeWriter(w storageWriter) bool {
+func isPostgresWriter(w storageWriter) bool {
 	switch w.(type) {
-	case *timescale.Writer, *timescale_shadow.Writer:
+	case *postgres.Writer, *postgres_shadow.Writer:
 		return true
 	default:
 		return false
@@ -400,14 +399,20 @@ func main() {
 		log.Fatalf("Error loading .env file: %v", err)
 	}
 
-	ts := time.Now().Truncate(time.Minute).UTC()
-	begin := time.Now()
+	runStart := time.Now()
+	begin := runStart
 
 	// Stage 1: load polling configuration (devices/slaves/registers).
 	var devices internal.Devices
 	if err := internal.LoadRegisters(*configPath, &devices); err != nil {
 		log.Fatalf("Error loading registers file: %v", err)
 	}
+	resolution, err := devices.Resolution()
+	if err != nil {
+		log.Fatalf("Error in config: %v", err)
+	}
+	// One timestamp for the whole run, rounded down to the configured step.
+	ts := runStart.Truncate(resolution).UTC()
 	// Skip registers that cannot be decoded instead of dropping their values on
 	// every read; the rest of the device is still collected.
 	devices, registerIssues := internal.ValidateDevices(devices)
@@ -431,49 +436,27 @@ func main() {
 				continue
 			}
 
-			switch strings.ToLower(strings.TrimSpace(output.Type)) {
-			case "influxdb2":
-				w, err := influx.NewWriter(output.Name, influx.Config{
-					HostEnv:     output.Influxdb2.HostEnv,
-					TokenEnv:    output.Influxdb2.TokenEnv,
-					OrgEnv:      output.Influxdb2.OrgEnv,
-					Bucket:      output.Influxdb2.Bucket,
-					Measurement: output.Influxdb2.Measurement,
-				})
+			kind, pgCfg, deprecated, err := output.Resolve()
+			if err != nil {
+				log.Fatalf("Error in storage.outputs[%d]: %v", i, err)
+			}
+			if deprecated != "" {
+				fmt.Printf("WARNING: %s\n", deprecated)
+			}
+
+			switch kind {
+			case storage.KindPostgres:
+				w, err := postgres.NewWriter(output.Name, postgres.Config(pgCfg))
 				if err != nil {
 					log.Fatalf("Error initializing storage output %q: %v", output.Name, err)
 				}
 				writers = append(writers, w)
-			case "timescaledb":
-				w, err := timescale.NewWriter(output.Name, timescale.Config{
-					HostEnv:     output.Timescaledb.HostEnv,
-					PortEnv:     output.Timescaledb.PortEnv,
-					UserEnv:     output.Timescaledb.UserEnv,
-					PasswordEnv: output.Timescaledb.PasswordEnv,
-					DatabaseEnv: output.Timescaledb.DatabaseEnv,
-					Schema:      output.Timescaledb.Schema,
-					Table:       output.Timescaledb.Table,
-				})
+			case storage.KindPostgresShadow:
+				w, err := postgres_shadow.NewWriter(output.Name, postgres_shadow.Config(pgCfg))
 				if err != nil {
 					log.Fatalf("Error initializing storage output %q: %v", output.Name, err)
 				}
 				writers = append(writers, w)
-			case "timescaledb_shadow":
-				w, err := timescale_shadow.NewWriter(output.Name, timescale_shadow.Config{
-					HostEnv:     output.TimescaledbShadow.HostEnv,
-					PortEnv:     output.TimescaledbShadow.PortEnv,
-					UserEnv:     output.TimescaledbShadow.UserEnv,
-					PasswordEnv: output.TimescaledbShadow.PasswordEnv,
-					DatabaseEnv: output.TimescaledbShadow.DatabaseEnv,
-					Schema:      output.TimescaledbShadow.Schema,
-					Table:       output.TimescaledbShadow.Table,
-				})
-				if err != nil {
-					log.Fatalf("Error initializing storage output %q: %v", output.Name, err)
-				}
-				writers = append(writers, w)
-			default:
-				log.Fatalf("Unsupported storage output type %q at storage.outputs[%d]", output.Type, i)
 			}
 		}
 
@@ -552,8 +535,8 @@ func main() {
 	if len(writers) > 0 {
 		dispatchBegin := time.Now()
 		fmt.Printf("Dispatching %d samples to %d storage outputs\n", len(samples), len(writers))
-		var timescaleRows []sample
-		timescaleRowsReady := false
+		var postgresRows []sample
+		postgresRowsReady := false
 
 		for _, w := range writers {
 			outputBegin := time.Now()
@@ -563,26 +546,26 @@ func main() {
 			}
 			fmt.Printf("Writing to output: %s\n", w.Name())
 
-			if isTimescaleLikeWriter(w) {
-				if !timescaleRowsReady {
+			if isPostgresWriter(w) {
+				if !postgresRowsReady {
 					aggBegin := time.Now()
-					timescaleRows = aggregateSamplesForTimescale(samples)
-					timescaleRowsReady = true
-					fmt.Printf("Timescale row aggregation: %d samples -> %d row upserts (%s)\n", len(samples), len(timescaleRows), time.Since(aggBegin))
+					postgresRows = aggregateSamplesForPostgres(samples)
+					postgresRowsReady = true
+					fmt.Printf("Row aggregation: %d samples -> %d row upserts (%s)\n", len(samples), len(postgresRows), time.Since(aggBegin))
 				}
 				workers := runtime.GOMAXPROCS(0)
-				if workers > timescaleWriteWorkers {
-					workers = timescaleWriteWorkers
+				if workers > postgresWriteWorkers {
+					workers = postgresWriteWorkers
 				}
-				if workers > len(timescaleRows) {
-					workers = len(timescaleRows)
+				if workers > len(postgresRows) {
+					workers = len(postgresRows)
 				}
 				if workers < 1 {
 					workers = 1
 				}
-				fmt.Printf("Timescale write workers: %d\n", workers)
+				fmt.Printf("Postgres write workers: %d\n", workers)
 				writeBegin := time.Now()
-				writeSamplesWithWorkers(w, timescaleRows, workers)
+				writeSamplesWithWorkers(w, postgresRows, workers)
 				writeDuration := time.Since(writeBegin)
 				flushBegin := time.Now()
 				w.Flush()

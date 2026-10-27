@@ -1,4 +1,4 @@
-package timescale
+package postgres
 
 import "fmt"
 
@@ -17,25 +17,25 @@ func (c Config) Validate(outputName string) error {
 		return fmt.Errorf("storage output name is empty")
 	}
 	if c.HostEnv == "" {
-		return fmt.Errorf("storage.outputs[%s].timescaledb.host_env is empty", outputName)
+		return fmt.Errorf("storage.outputs[%s].postgres.host_env is empty", outputName)
 	}
 	if c.PortEnv == "" {
-		return fmt.Errorf("storage.outputs[%s].timescaledb.port_env is empty", outputName)
+		return fmt.Errorf("storage.outputs[%s].postgres.port_env is empty", outputName)
 	}
 	if c.UserEnv == "" {
-		return fmt.Errorf("storage.outputs[%s].timescaledb.user_env is empty", outputName)
+		return fmt.Errorf("storage.outputs[%s].postgres.user_env is empty", outputName)
 	}
 	if c.PasswordEnv == "" {
-		return fmt.Errorf("storage.outputs[%s].timescaledb.password_env is empty", outputName)
+		return fmt.Errorf("storage.outputs[%s].postgres.password_env is empty", outputName)
 	}
 	if c.DatabaseEnv == "" {
-		return fmt.Errorf("storage.outputs[%s].timescaledb.database_env is empty", outputName)
+		return fmt.Errorf("storage.outputs[%s].postgres.database_env is empty", outputName)
 	}
 	if c.Schema == "" {
-		return fmt.Errorf("storage.outputs[%s].timescaledb.schema is empty", outputName)
+		return fmt.Errorf("storage.outputs[%s].postgres.schema is empty", outputName)
 	}
 	if c.Table == "" {
-		return fmt.Errorf("storage.outputs[%s].timescaledb.table is empty", outputName)
+		return fmt.Errorf("storage.outputs[%s].postgres.table is empty", outputName)
 	}
 	return nil
 }

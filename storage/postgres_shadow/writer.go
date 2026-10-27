@@ -1,4 +1,4 @@
-package timescale_shadow
+package postgres_shadow
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const backendType = "timescaledb_shadow"
+const backendType = "postgres_shadow"
 
 var nonIdentChars = regexp.MustCompile(`[^a-z0-9_]+`)
 var multiUnderscore = regexp.MustCompile(`_+`)

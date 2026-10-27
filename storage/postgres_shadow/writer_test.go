@@ -1,4 +1,4 @@
-package timescale_shadow
+package postgres_shadow
 
 import (
 	"encoding/json"

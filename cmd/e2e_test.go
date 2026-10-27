@@ -102,7 +102,8 @@ func TestAgentBinaryWritesShadowRows(t *testing.T) {
 	port := startModbusServer(t, dev)
 
 	dir := t.TempDir()
-	config := fmt.Sprintf(`plant: e2e_plant
+	configTemplate := `plant: e2e_plant
+timestamp_resolution: RESOLUTION
 devices:
   - device:
       name: inverter_block
@@ -132,9 +133,9 @@ devices:
 storage:
   outputs:
     - name: local_shadow
-      type: timescaledb_shadow
+      type: OUTPUT_TYPE
       enabled: true
-      timescaledb_shadow:
+      OUTPUT_TYPE:
         host_env: E2E_PG_HOST
         port_env: E2E_PG_PORT
         user_env: E2E_PG_USER
@@ -142,11 +143,17 @@ storage:
         database_env: E2E_PG_DB
         schema: %s
         table: inverter_shadow
-`, port, schema)
-	configPath := filepath.Join(dir, "config.yml")
-	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
-		t.Fatal(err)
+`
+	writeAgentConfig := func(outputType, resolution string) string {
+		config := strings.ReplaceAll(configTemplate, "OUTPUT_TYPE", outputType)
+		config = fmt.Sprintf(strings.Replace(config, "RESOLUTION", resolution, 1), port, schema)
+		path := filepath.Join(dir, outputType+"-"+resolution+".yml")
+		if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
 	}
+	configPath := writeAgentConfig("postgres_shadow", "10s")
 	env := fmt.Sprintf("E2E_PG_HOST=%s\nE2E_PG_PORT=%s\nE2E_PG_USER=%s\nE2E_PG_PASSWORD=%s\nE2E_PG_DB=%s\n",
 		pgURL.Hostname(), pgURL.Port(), pgURL.User.Username(), password, strings.TrimPrefix(pgURL.Path, "/"))
 	envPath := filepath.Join(dir, "agent.env")
@@ -158,6 +165,17 @@ storage:
 	out := runAgent(t, bin, configPath, envPath)
 	if !strings.Contains(out, `WARNING: skipping invalid register`) || !strings.Contains(out, "typo_register") {
 		t.Fatalf("expected the invalid register to be reported and skipped\n%s", out)
+	}
+	if strings.Contains(out, "renamed to") {
+		t.Fatalf("current output names must not produce a deprecation warning\n%s", out)
+	}
+
+	var tsMicros int64
+	if err := conn.QueryRow(ctx, "SELECT (extract(epoch FROM ts) * 1000000)::bigint FROM "+table+" LIMIT 1").Scan(&tsMicros); err != nil {
+		t.Fatalf("read ts: %v", err)
+	}
+	if tsMicros%10_000_000 != 0 {
+		t.Fatalf("timestamp_resolution 10s: stored ts is not a multiple of 10 s (%d us)", tsMicros)
 	}
 
 	type row struct {
@@ -232,9 +250,13 @@ storage:
 		t.Fatalf("expected PostgreSQL to read the payload as NaN, got %v", nanAsDouble)
 	}
 
-	// A second run in the same minute updates the rows instead of duplicating
-	// them; if the minute changed, it adds one row per slave for the new ts.
-	runAgent(t, bin, configPath, envPath)
+	// A second run, with the legacy output names, still writes. In the same
+	// 10 s step it updates the rows instead of duplicating them; otherwise it
+	// adds one row per slave for the new ts.
+	legacyOut := runAgent(t, bin, writeAgentConfig("timescaledb_shadow", "10s"), envPath)
+	if !strings.Contains(legacyOut, `uses type "timescaledb_shadow", renamed to "postgres_shadow"`) {
+		t.Fatalf("legacy output names must be accepted with a warning\n%s", legacyOut)
+	}
 	var perTs []int
 	tsRows, err := conn.Query(ctx, "SELECT count(*) FROM "+table+" GROUP BY ts ORDER BY ts")
 	if err != nil {
@@ -252,5 +274,16 @@ storage:
 		if n != 2 {
 			t.Fatalf("expected 2 rows per timestamp after a second run, got %v", perTs)
 		}
+	}
+
+	// timestamp_resolution 0s keeps the exact read time. With any rounding
+	// the stored ts would be a whole number of seconds.
+	runAgent(t, bin, writeAgentConfig("postgres_shadow", "0s"), envPath)
+	var fractional int
+	if err := conn.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE extract(microseconds FROM ts)::bigint % 1000000 <> 0").Scan(&fractional); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if fractional != 2 {
+		t.Fatalf("timestamp_resolution 0s: expected 2 rows with sub-second ts, got %d", fractional)
 	}
 }
