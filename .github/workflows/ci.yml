@@ -57,3 +57,26 @@ jobs:
           mkdir -p "$RUNNER_TEMP/allcov"
           go tool covdata merge -i="$RUNNER_TEMP/unitcov,$RUNNER_TEMP/e2ecov" -o="$RUNNER_TEMP/allcov"
           go tool covdata percent -i="$RUNNER_TEMP/allcov" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Per-function listing in the job summary and a line-by-line HTML report
+      # as a downloadable artifact, so coverage can be checked without running
+      # the tests.
+      - name: Coverage report
+        run: |
+          go tool covdata textfmt -i="$RUNNER_TEMP/allcov" -o="$RUNNER_TEMP/coverage.out"
+          go tool cover -html="$RUNNER_TEMP/coverage.out" -o="$RUNNER_TEMP/coverage.html"
+          {
+            echo "<details><summary>Coverage by function</summary>"
+            echo
+            echo '```'
+            go tool cover -func="$RUNNER_TEMP/coverage.out"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: ${{ runner.temp }}/coverage.html
+          retention-days: 30
