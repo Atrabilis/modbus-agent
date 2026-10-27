@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Tests for `pollDevice` against fake Modbus endpoints (`cmd/poll_test.go`): every datatype read in blocks with gains and slave offset, coils and input registers, an exception in one block, healthcheck with `skip_device` and `fail_run`, read timeout, unreachable endpoint, transaction id mismatch with and without retry, and RTU over TCP. Regular cases use the server from `github.com/simonvetter/modbus` (MIT, test-only dependency: it is not compiled into the agent binary); the transaction id and RTU cases use minimal servers written in the test.
+- End-to-end test (`cmd/e2e_test.go`): builds the agent binary, runs it with a config and a dotenv file against the fake Modbus server and PostgreSQL, and checks the rows in a shadow table with the production layout, including a NaN register, an invalid register that must be skipped, and a second run that must upsert. Skipped unless `MODBUS_AGENT_E2E_PG` is set.
+- CI: PostgreSQL 17.9 service for the end-to-end test and a merged coverage summary (unit tests plus the binary run) in the job summary.
+
 ## nightly-20261026-config-validatio (2026-10-26)
 
 ### Fixed

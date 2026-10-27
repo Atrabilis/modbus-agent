@@ -1,0 +1,256 @@
+package main
+
+// End-to-end test: builds the real agent binary, runs it the way the systemd
+// timer does (config file + dotenv file), against the fake Modbus server from
+// poll_test.go and a real PostgreSQL, then checks the rows in the shadow table.
+//
+// It needs a PostgreSQL server and is skipped unless MODBUS_AGENT_E2E_PG is set
+// to a connection URL, e.g. postgres://postgres:postgres@127.0.0.1:5432/postgres
+// (CI provides one as a service container). If MODBUS_AGENT_E2E_COVERDIR is set,
+// the binary is built with -cover and writes its coverage data there.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// Same table layout the ansible-infra playbook ensure_timescale_shadow_table.yml creates.
+const shadowTableDDL = `CREATE TABLE %s (
+  plant TEXT NOT NULL,
+  ts TIMESTAMPTZ NOT NULL,
+  device_name TEXT NOT NULL,
+  slave_name TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  series_key TEXT NOT NULL,
+  ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (plant, device_name, slave_name, ts, series_key)
+)`
+
+func buildAgent(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "modbus-agent")
+	args := []string{"build", "-o", bin}
+	if os.Getenv("MODBUS_AGENT_E2E_COVERDIR") != "" {
+		args = append(args, "-cover", "-coverpkg=github.com/atrabilis/modbus-agent/...")
+	}
+	args = append(args, ".")
+	cmd := exec.Command("go", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func runAgent(t *testing.T, bin, configPath, envPath string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "-configPath", configPath, "-envPath", envPath)
+	cmd.Env = os.Environ()
+	if dir := os.Getenv("MODBUS_AGENT_E2E_COVERDIR"); dir != "" {
+		cmd.Env = append(cmd.Env, "GOCOVERDIR="+dir)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("agent run failed: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+func TestAgentBinaryWritesShadowRows(t *testing.T) {
+	dsn := os.Getenv("MODBUS_AGENT_E2E_PG")
+	if dsn == "" {
+		t.Skip("MODBUS_AGENT_E2E_PG not set; skipping end-to-end test")
+	}
+	pgURL, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse MODBUS_AGENT_E2E_PG: %v", err)
+	}
+	password, _ := pgURL.User.Password()
+
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	schema := fmt.Sprintf("e2e_%d", time.Now().UnixNano())
+	table := schema + ".inverter_shadow"
+	if _, err := conn.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() { _, _ = conn.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") })
+	if _, err := conn.Exec(ctx, fmt.Sprintf(shadowTableDDL, table)); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	dev := newFakeDevice()
+	seedTestDevice(dev)
+	dev.setHolding(1, 130, 0x7FC0, 0x0000) // quiet NaN as F32BE
+	port := startModbusServer(t, dev)
+
+	dir := t.TempDir()
+	config := fmt.Sprintf(`plant: e2e_plant
+devices:
+  - device:
+      name: inverter_block
+      ip: 127.0.0.1
+      port: %d
+      timeout_ms: 1000
+      slaves:
+        - name: inv1
+          slave_id: 1
+          offset: 0
+          modbus_registers:
+            - {register: 100, function_code: 3, name: ac_voltage, words: 1, datatype: U16, gain: 0.1}
+            - {register: 101, function_code: 3, name: temperature, words: 1, datatype: S16, gain: 1}
+            - {register: 102, function_code: 3, name: energy, words: 2, datatype: U32, gain: 1}
+            - {register: 104, function_code: 3, name: frequency, words: 2, datatype: F32BE, gain: 1}
+            - {register: 106, function_code: 3, name: total_wh, words: 4, datatype: U64BE, gain: 1}
+            - {register: 120, function_code: 3, name: model, words: 2, datatype: STR, gain: 1}
+            - {register: 130, function_code: 3, name: dc_power, words: 2, datatype: F32BE, gain: 1}
+            - {register: 200, function_code: 4, name: status, words: 1, datatype: U16, gain: 1}
+            - {register: 0, function_code: 1, name: relays, words: 8, datatype: U8, gain: 1}
+            - {register: 300, function_code: 3, name: typo_register, words: 1, datatype: U61, gain: 1}
+        - name: inv2
+          slave_id: 2
+          offset: 1
+          modbus_registers:
+            - {register: 4951, function_code: 3, name: ac_voltage, words: 1, datatype: U16, gain: 1}
+storage:
+  outputs:
+    - name: local_shadow
+      type: timescaledb_shadow
+      enabled: true
+      timescaledb_shadow:
+        host_env: E2E_PG_HOST
+        port_env: E2E_PG_PORT
+        user_env: E2E_PG_USER
+        password_env: E2E_PG_PASSWORD
+        database_env: E2E_PG_DB
+        schema: %s
+        table: inverter_shadow
+`, port, schema)
+	configPath := filepath.Join(dir, "config.yml")
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := fmt.Sprintf("E2E_PG_HOST=%s\nE2E_PG_PORT=%s\nE2E_PG_USER=%s\nE2E_PG_PASSWORD=%s\nE2E_PG_DB=%s\n",
+		pgURL.Hostname(), pgURL.Port(), pgURL.User.Username(), password, strings.TrimPrefix(pgURL.Path, "/"))
+	envPath := filepath.Join(dir, "agent.env")
+	if err := os.WriteFile(envPath, []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := buildAgent(t)
+	out := runAgent(t, bin, configPath, envPath)
+	if !strings.Contains(out, `WARNING: skipping invalid register`) || !strings.Contains(out, "typo_register") {
+		t.Fatalf("expected the invalid register to be reported and skipped\n%s", out)
+	}
+
+	type row struct {
+		slave   string
+		slaveID float64
+		fields  map[string]interface{}
+	}
+	readRows := func() []row {
+		rows, err := conn.Query(ctx, "SELECT slave_name, payload FROM "+table+" WHERE plant = 'e2e_plant' AND device_name = 'inverter_block' ORDER BY ts, slave_name")
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		var got []row
+		for rows.Next() {
+			var slave string
+			var payload []byte
+			if err := rows.Scan(&slave, &payload); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			var p struct {
+				SlaveID float64                `json:"slave_id"`
+				Fields  map[string]interface{} `json:"fields"`
+			}
+			if err := json.Unmarshal(payload, &p); err != nil {
+				t.Fatalf("payload %s: %v", payload, err)
+			}
+			got = append(got, row{slave: slave, slaveID: p.SlaveID, fields: p.Fields})
+		}
+		return got
+	}
+
+	rows := readRows()
+	if len(rows) != 2 {
+		t.Fatalf("expected one row per slave (2), got %d\n%s", len(rows), out)
+	}
+	inv1, inv2 := rows[0], rows[1]
+	if inv1.slave != "inv1" || inv1.slaveID != 1 || inv2.slave != "inv2" || inv2.slaveID != 2 {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+
+	wantNumbers := map[string]float64{
+		"ac_voltage": 234.5, "temperature": -200, "energy": 70000, "frequency": 50.25,
+		"total_wh": 1<<40 + 5, "status": 7, "relays": 5,
+	}
+	for name, want := range wantNumbers {
+		got, ok := inv1.fields[name].(float64)
+		if !ok || math.Abs(got-want) > 1e-9 {
+			t.Errorf("inv1.%s = %v, want %v", name, inv1.fields[name], want)
+		}
+	}
+	if inv1.fields["model"] != "AB12" {
+		t.Errorf("inv1.model = %v, want AB12", inv1.fields["model"])
+	}
+	// NaN cannot travel as a JSON number; it must arrive as the string
+	// PostgreSQL accepts for double precision, without losing the row.
+	if inv1.fields["dc_power"] != "NaN" {
+		t.Errorf("inv1.dc_power = %v, want \"NaN\"", inv1.fields["dc_power"])
+	}
+	if _, ok := inv1.fields["typo_register"]; ok {
+		t.Error("an invalid register must not be written")
+	}
+	if got, _ := inv2.fields["ac_voltage"].(float64); got != 42 {
+		t.Errorf("inv2.ac_voltage = %v, want 42", inv2.fields["ac_voltage"])
+	}
+
+	var nanAsDouble float64
+	if err := conn.QueryRow(ctx, "SELECT (payload->'fields'->>'dc_power')::double precision FROM "+table+" WHERE slave_name = 'inv1' LIMIT 1").Scan(&nanAsDouble); err != nil {
+		t.Fatalf("cast NaN payload to double precision: %v", err)
+	}
+	if !math.IsNaN(nanAsDouble) {
+		t.Fatalf("expected PostgreSQL to read the payload as NaN, got %v", nanAsDouble)
+	}
+
+	// A second run in the same minute updates the rows instead of duplicating
+	// them; if the minute changed, it adds one row per slave for the new ts.
+	runAgent(t, bin, configPath, envPath)
+	var perTs []int
+	tsRows, err := conn.Query(ctx, "SELECT count(*) FROM "+table+" GROUP BY ts ORDER BY ts")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	for tsRows.Next() {
+		var n int
+		if err := tsRows.Scan(&n); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		perTs = append(perTs, n)
+	}
+	tsRows.Close()
+	for _, n := range perTs {
+		if n != 2 {
+			t.Fatalf("expected 2 rows per timestamp after a second run, got %v", perTs)
+		}
+	}
+}

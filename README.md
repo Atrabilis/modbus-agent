@@ -414,6 +414,25 @@ go vet ./...
 go test ./...
 ```
 
+`cmd/poll_test.go` runs `pollDevice` against fake Modbus endpoints on `127.0.0.1`: the server from `github.com/simonvetter/modbus` (a test-only dependency) for values, exceptions, timeouts and healthchecks, and two minimal servers written in the test for a response with the wrong transaction id and for RTU over TCP.
+
+`cmd/e2e_test.go` builds the agent binary and runs it like the systemd timer does, against the fake Modbus server and a real PostgreSQL, then checks the rows written to a shadow table with the production layout. It is skipped unless `MODBUS_AGENT_E2E_PG` points to a PostgreSQL server:
+
+```bash
+docker run -d --rm --name modbus-agent-e2e-pg -e POSTGRES_PASSWORD=e2e -p 127.0.0.1:55432:5432 postgres:17.9
+MODBUS_AGENT_E2E_PG=postgres://postgres:e2e@127.0.0.1:55432/postgres go test ./cmd
+docker stop modbus-agent-e2e-pg
+```
+
+To measure coverage of both the tests and the binary run (this is what CI does):
+
+```bash
+mkdir -p /tmp/unitcov /tmp/e2ecov /tmp/allcov
+MODBUS_AGENT_E2E_COVERDIR=/tmp/e2ecov go test -cover -coverpkg=./... ./... -args -test.gocoverdir=/tmp/unitcov
+go tool covdata merge -i=/tmp/unitcov,/tmp/e2ecov -o=/tmp/allcov
+go tool covdata percent -i=/tmp/allcov
+```
+
 `cmd/decode_test.go` checks every supported datatype against an independent oracle (`encoding/binary` and Go's own conversions): the whole 8- and 16-bit domains, boundary values for 32- and 64-bit types, float special values, every `gain` used in production, short buffers and text types. Plain `go test` runs the fuzz targets' seed corpus; to explore further:
 
 ```bash

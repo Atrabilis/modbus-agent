@@ -7,6 +7,7 @@ require (
 	github.com/influxdata/influxdb-client-go/v2 v2.14.0
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/joho/godotenv v1.5.1
+	github.com/simonvetter/modbus v1.6.4
 	gopkg.in/yaml.v3 v3.0.1
 )
 

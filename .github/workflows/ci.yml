@@ -9,6 +9,24 @@ jobs:
     name: Vet and test
     runs-on: ubuntu-latest
 
+    # PostgreSQL for the end-to-end test (cmd/e2e_test.go). Same major/minor
+    # as the edge sites; the shadow table is a plain table, no TimescaleDB needed.
+    services:
+      postgres:
+        image: postgres:17.9
+        env:
+          POSTGRES_PASSWORD: e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      MODBUS_AGENT_E2E_PG: postgres://postgres:e2e@127.0.0.1:5432/postgres
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -26,5 +44,16 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # Unit tests write coverage data to unitcov/; the end-to-end test runs
+      # the real binary built with -cover, which writes to e2ecov/.
       - name: Test
-        run: go test ./...
+        run: |
+          mkdir -p "$RUNNER_TEMP/unitcov" "$RUNNER_TEMP/e2ecov"
+          MODBUS_AGENT_E2E_COVERDIR="$RUNNER_TEMP/e2ecov" \
+            go test -count=1 -cover -coverpkg=./... ./... -args -test.gocoverdir="$RUNNER_TEMP/unitcov"
+
+      - name: Coverage summary
+        run: |
+          mkdir -p "$RUNNER_TEMP/allcov"
+          go tool covdata merge -i="$RUNNER_TEMP/unitcov,$RUNNER_TEMP/e2ecov" -o="$RUNNER_TEMP/allcov"
+          go tool covdata percent -i="$RUNNER_TEMP/allcov" | tee -a "$GITHUB_STEP_SUMMARY"
