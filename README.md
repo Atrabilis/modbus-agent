@@ -425,3 +425,7 @@ go test -run '^$' -fuzz='^FuzzDecodeText$' -fuzztime=30s ./cmd
 `FuzzDecodeText` compares the text decoder with an `encoding/json` round trip for arbitrary bytes.
 
 The tests document current behavior that callers should know about: a buffer shorter than the datatype needs decodes as `0`, NaN and infinity are returned as valid floats, and 64-bit integers are exact only up to 2^53 because values are returned as `float64`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
