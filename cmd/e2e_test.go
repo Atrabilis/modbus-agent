@@ -287,3 +287,149 @@ storage:
 		t.Fatalf("timestamp_resolution 0s: expected 2 rows with sub-second ts, got %d", fractional)
 	}
 }
+
+// The `postgres` output (one column per register) against a typed test table
+// shaped like sql/postgres_example.sql. The table has no column for
+// "frequency": that register must be skipped with a warning while the rest of
+// the row is written.
+func TestAgentBinaryWritesTypedRows(t *testing.T) {
+	dsn := os.Getenv("MODBUS_AGENT_E2E_PG")
+	if dsn == "" {
+		t.Skip("MODBUS_AGENT_E2E_PG not set; skipping end-to-end test")
+	}
+	pgURL, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse MODBUS_AGENT_E2E_PG: %v", err)
+	}
+	password, _ := pgURL.User.Password()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	schema := fmt.Sprintf("e2e_typed_%d", time.Now().UnixNano())
+	table := schema + ".inverter"
+	if _, err := conn.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = conn.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") })
+	if _, err := conn.Exec(ctx, `CREATE TABLE `+table+` (
+		ts TIMESTAMPTZ NOT NULL, device_name TEXT NOT NULL, slave_name TEXT NOT NULL, slave_id INTEGER NOT NULL,
+		series_key TEXT NOT NULL, flags JSONB,
+		ac_voltage DOUBLE PRECISION, temperature DOUBLE PRECISION, energy DOUBLE PRECISION,
+		total_wh DOUBLE PRECISION, model TEXT, dc_power DOUBLE PRECISION, status DOUBLE PRECISION,
+		PRIMARY KEY (ts, device_name, slave_name, series_key))`); err != nil {
+		t.Fatal(err)
+	}
+
+	dev := newFakeDevice()
+	seedTestDevice(dev)
+	dev.setHolding(1, 130, 0x7FC0, 0x0000) // quiet NaN as F32BE
+	port := startModbusServer(t, dev)
+
+	dir := t.TempDir()
+	writeConfig := func(outputType string) string {
+		cfg := fmt.Sprintf(`plant: e2e_plant
+timestamp_resolution: 10s
+devices:
+  - device:
+      name: inverter_block
+      ip: 127.0.0.1
+      port: %d
+      timeout_ms: 1000
+      slaves:
+        - name: inv1
+          slave_id: 1
+          modbus_registers:
+            - {register: 100, function_code: 3, name: ac_voltage, words: 1, datatype: U16, gain: 0.1}
+            - {register: 101, function_code: 3, name: temperature, words: 1, datatype: S16, gain: 1}
+            - {register: 102, function_code: 3, name: energy, words: 2, datatype: U32, gain: 1}
+            - {register: 104, function_code: 3, name: frequency, words: 2, datatype: F32BE, gain: 1}
+            - {register: 106, function_code: 3, name: total_wh, words: 4, datatype: U64BE, gain: 1}
+            - {register: 120, function_code: 3, name: model, words: 2, datatype: STR, gain: 1}
+            - {register: 130, function_code: 3, name: dc_power, words: 2, datatype: F32BE, gain: 1}
+            - {register: 200, function_code: 4, name: status, words: 1, datatype: U16, gain: 1}
+        - name: inv2
+          slave_id: 2
+          offset: 1
+          modbus_registers:
+            - {register: 4951, function_code: 3, name: ac_voltage, words: 1, datatype: U16, gain: 1}
+storage:
+  outputs:
+    - name: typed
+      type: %s
+      %s:
+        host_env: E2E_PG_HOST
+        port_env: E2E_PG_PORT
+        user_env: E2E_PG_USER
+        password_env: E2E_PG_PASSWORD
+        database_env: E2E_PG_DB
+        schema: %s
+        table: inverter
+`, port, outputType, outputType, schema)
+		path := filepath.Join(dir, outputType+".yml")
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	env := fmt.Sprintf("E2E_PG_HOST=%s\nE2E_PG_PORT=%s\nE2E_PG_USER=%s\nE2E_PG_PASSWORD=%s\nE2E_PG_DB=%s\n",
+		pgURL.Hostname(), pgURL.Port(), pgURL.User.Username(), password, strings.TrimPrefix(pgURL.Path, "/"))
+	envPath := filepath.Join(dir, "agent.env")
+	if err := os.WriteFile(envPath, []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := buildAgent(t)
+	out := runAgent(t, bin, writeConfig("postgres"), envPath)
+	if !strings.Contains(out, `ignoring unknown column "frequency"`) {
+		t.Fatalf("a register without a column must be reported\n%s", out)
+	}
+
+	var acVoltage, temperature, energy, totalWh, dcPower, status float64
+	var model, plant, seriesKey string
+	var slaveID int
+	if err := conn.QueryRow(ctx, `SELECT slave_id, ac_voltage, temperature, energy, total_wh, model, dc_power, status,
+		flags->>'plant', series_key FROM `+table+` WHERE slave_name = 'inv1'`).Scan(
+		&slaveID, &acVoltage, &temperature, &energy, &totalWh, &model, &dcPower, &status, &plant, &seriesKey); err != nil {
+		t.Fatalf("read inv1 row: %v\n%s", err, out)
+	}
+	if slaveID != 1 || acVoltage != 234.5 || temperature != -200 || energy != 70000 || totalWh != float64(1<<40+5) ||
+		model != "AB12" || status != 7 {
+		t.Fatalf("unexpected inv1 row: slave_id=%d ac_voltage=%v temperature=%v energy=%v total_wh=%v model=%q status=%v",
+			slaveID, acVoltage, temperature, energy, totalWh, model, status)
+	}
+	if !math.IsNaN(dcPower) {
+		t.Fatalf("NaN must be stored as a float NaN, got %v", dcPower)
+	}
+	if plant != "e2e_plant" || seriesKey == "" {
+		t.Fatalf("tags must go to flags and series_key: plant=%q series_key=%q", plant, seriesKey)
+	}
+	var inv2 float64
+	if err := conn.QueryRow(ctx, "SELECT ac_voltage FROM "+table+" WHERE slave_name = 'inv2'").Scan(&inv2); err != nil || inv2 != 42 {
+		t.Fatalf("inv2 ac_voltage = %v (%v), want 42", inv2, err)
+	}
+
+	// The legacy type name still works, and a run in the same 10 s step
+	// updates the rows instead of duplicating them.
+	legacyOut := runAgent(t, bin, writeConfig("timescaledb"), envPath)
+	if !strings.Contains(legacyOut, `uses type "timescaledb", renamed to "postgres"`) {
+		t.Fatalf("legacy output name must be accepted with a warning\n%s", legacyOut)
+	}
+	rows, err := conn.Query(ctx, "SELECT count(*) FROM "+table+" GROUP BY ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 2 {
+			t.Fatalf("expected 2 rows (one per slave) per timestamp, got %d", n)
+		}
+	}
+}

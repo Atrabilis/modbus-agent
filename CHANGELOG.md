@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- End-to-end test of the `postgres` output (one column per register) against a typed test table: values, NaN as a float, a register without a column skipped with a warning, tags in `flags`/`series_key`, the legacy `timescaledb` name, and the upsert of a second run.
+
+### Fixed
+
+- Docs: `sql/postgres_example.sql` and the README said tags such as `plant` could be separate columns and that `ip` became `ip_address`; the writer never did either. Tags other than the identity ones go into the `flags` JSONB column.
+
+## nightly-20261027-postgres-rename (2026-10-27)
+
 ### Changed
 
 - Storage outputs renamed to what they are: `timescaledb_shadow` -> `postgres_shadow` and `timescaledb` -> `postgres` (neither uses TimescaleDB features; both run on plain PostgreSQL). The old names are still accepted, as `type:` and as the settings block, with a `WARNING: ... renamed to ...` in the run log. Packages renamed to `storage/postgres_shadow` and `storage/postgres`.
