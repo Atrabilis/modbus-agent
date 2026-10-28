@@ -1,0 +1,12 @@
+version: "2"
+
+# Default linters: errcheck, govet, ineffassign, staticcheck, unused.
+# No exclusion presets: an error that is ignored on purpose is assigned to _
+# explicitly (e.g. `defer func() { _ = f.Close() }()`), so it reads as a
+# decision and not as an oversight.
+linters:
+  default: standard
+
+formatters:
+  enable:
+    - gofmt

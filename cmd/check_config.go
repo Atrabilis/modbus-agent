@@ -21,7 +21,7 @@ func runCheckConfig(path string) int {
 func validateConfigFile(path string, out io.Writer) int {
 	var devices internal.Devices
 	if err := internal.LoadRegisters(path, &devices); err != nil {
-		fmt.Fprintf(out, "ERROR: cannot load registers file %s: %v\n", path, err)
+		_, _ = fmt.Fprintf(out, "ERROR: cannot load registers file %s: %v\n", path, err)
 		return 1
 	}
 
@@ -34,22 +34,22 @@ func validateConfigFile(path string, out io.Writer) int {
 
 	problems := 0
 	if _, err := devices.Resolution(); err != nil {
-		fmt.Fprintf(out, "INVALID %v\n", err)
+		_, _ = fmt.Fprintf(out, "INVALID %v\n", err)
 		problems++
 	}
 	problems += validateStorage(path, out)
 
 	_, issues := internal.ValidateDevices(devices)
 	for _, issue := range issues {
-		fmt.Fprintf(out, "INVALID %s\n", issue)
+		_, _ = fmt.Fprintf(out, "INVALID %s\n", issue)
 	}
 	if len(issues) > 0 {
-		fmt.Fprintf(out, "%s: %d of %d registers are invalid\n", path, len(issues), total)
+		_, _ = fmt.Fprintf(out, "%s: %d of %d registers are invalid\n", path, len(issues), total)
 	}
 	if len(issues) > 0 || problems > 0 {
 		return 1
 	}
-	fmt.Fprintf(out, "%s: %d registers OK\n", path, total)
+	_, _ = fmt.Fprintf(out, "%s: %d registers OK\n", path, total)
 	return 0
 }
 
@@ -59,7 +59,7 @@ func validateConfigFile(path string, out io.Writer) int {
 func validateStorage(path string, out io.Writer) int {
 	cfg, err := storage.LoadConfig(path)
 	if err != nil {
-		fmt.Fprintf(out, "INVALID storage: %v\n", err)
+		_, _ = fmt.Fprintf(out, "INVALID storage: %v\n", err)
 		return 1
 	}
 
@@ -72,12 +72,12 @@ func validateStorage(path string, out io.Writer) int {
 		enabled++
 		kind, pgCfg, deprecated, err := output.Resolve()
 		if err != nil {
-			fmt.Fprintf(out, "INVALID storage: %v\n", err)
+			_, _ = fmt.Fprintf(out, "INVALID storage: %v\n", err)
 			problems++
 			continue
 		}
 		if deprecated != "" {
-			fmt.Fprintf(out, "WARNING: %s\n", deprecated)
+			_, _ = fmt.Fprintf(out, "WARNING: %s\n", deprecated)
 		}
 		switch kind {
 		case storage.KindPostgres:
@@ -86,12 +86,12 @@ func validateStorage(path string, out io.Writer) int {
 			err = postgres_shadow.Config(pgCfg).Validate(output.Name)
 		}
 		if err != nil {
-			fmt.Fprintf(out, "INVALID storage: %v\n", err)
+			_, _ = fmt.Fprintf(out, "INVALID storage: %v\n", err)
 			problems++
 		}
 	}
 	if enabled == 0 {
-		fmt.Fprintln(out, "INVALID storage: no enabled storage outputs")
+		_, _ = fmt.Fprintln(out, "INVALID storage: no enabled storage outputs")
 		problems++
 	}
 	return problems

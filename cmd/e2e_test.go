@@ -84,7 +84,7 @@ func TestAgentBinaryWritesShadowRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	schema := fmt.Sprintf("e2e_%d", time.Now().UnixNano())
 	table := schema + ".inverter_shadow"
@@ -307,7 +307,7 @@ func TestAgentBinaryWritesTypedRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer func() { _ = conn.Close(ctx) }()
 
 	schema := fmt.Sprintf("e2e_typed_%d", time.Now().UnixNano())
 	table := schema + ".inverter"

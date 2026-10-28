@@ -146,7 +146,7 @@ func freePort(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
@@ -441,14 +441,14 @@ func startMismatchServer(t *testing.T, value uint16) int {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for n := 0; ; n++ {
 			req := make([]byte, 12) // MBAP (7) + fc, addr, quantity (5)
 			if _, err := io.ReadFull(conn, req); err != nil {
@@ -544,14 +544,14 @@ func startRTUServer(t *testing.T, slaveID byte, regs map[uint16]uint16) int {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		for {
 			req := make([]byte, 8)
 			if _, err := io.ReadFull(conn, req); err != nil {

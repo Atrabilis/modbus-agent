@@ -44,6 +44,12 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # golangci-lint with the repo's .golangci.yml (default linters plus gofmt).
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+
       # Unit tests write coverage data to unitcov/; the end-to-end test runs
       # the real binary built with -cover, which writes to e2ecov/.
       - name: Test

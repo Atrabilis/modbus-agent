@@ -178,7 +178,7 @@ func TestNewPollSessionUsesConfiguredTCPTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	accepted := make(chan net.Conn, 1)
 	go func() {
@@ -207,9 +207,9 @@ func TestNewPollSessionUsesConfiguredTCPTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new poll session: %v", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	if conn := <-accepted; conn != nil {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 	}
 
 	if got := session.Timeout(); got != 2300*time.Millisecond {
@@ -354,14 +354,14 @@ func TestRTUOverTCPSessionReadHoldingRegisters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		req := make([]byte, 8)
 		if _, err := io.ReadFull(conn, req); err != nil {
@@ -393,7 +393,7 @@ func TestRTUOverTCPSessionReadHoldingRegisters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new poll session: %v", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	if got := session.Timeout(); got != 1700*time.Millisecond {
 		t.Fatalf("expected configured RTU-over-TCP timeout 1700ms, got %s", got)
 	}

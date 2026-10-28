@@ -286,7 +286,7 @@ func pollDevice(plant string, dev internal.Device, ts time.Time) ([]sample, stri
 		return nil, out.String(), 0, 0, err
 	}
 	session := &countingPollSession{PollSession: baseSession}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	deviceSamples := make([]sample, 0, 256)
 	activeSlaves := make([]internal.Slave, 0, len(dev.Slaves))
