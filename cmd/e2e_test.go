@@ -41,6 +41,11 @@ func buildAgent(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "modbus-agent")
 	args := []string{"build", "-o", bin}
+	// E2E_RACE=1 (set in CI) builds the binary with the race detector, so a
+	// data race in the program itself fails the test, not only one in test code.
+	if os.Getenv("E2E_RACE") != "" {
+		args = append(args, "-race")
+	}
 	if os.Getenv("MODBUS_AGENT_E2E_COVERDIR") != "" {
 		args = append(args, "-cover", "-coverpkg=github.com/atrabilis/modbus-agent/...")
 	}

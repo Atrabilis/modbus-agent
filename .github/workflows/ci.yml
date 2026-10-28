@@ -51,12 +51,13 @@ jobs:
           version: v2.14.0
 
       # Unit tests write coverage data to unitcov/; the end-to-end test runs
-      # the real binary built with -cover, which writes to e2ecov/.
+      # the real binary built with -cover, which writes to e2ecov/. Both run
+      # with the race detector (E2E_RACE also builds the binary with -race).
       - name: Test
         run: |
           mkdir -p "$RUNNER_TEMP/unitcov" "$RUNNER_TEMP/e2ecov"
-          MODBUS_AGENT_E2E_COVERDIR="$RUNNER_TEMP/e2ecov" \
-            go test -count=1 -cover -coverpkg=./... ./... -args -test.gocoverdir="$RUNNER_TEMP/unitcov"
+          E2E_RACE=1 MODBUS_AGENT_E2E_COVERDIR="$RUNNER_TEMP/e2ecov" \
+            go test -race -count=1 -cover -coverpkg=./... ./... -args -test.gocoverdir="$RUNNER_TEMP/unitcov"
 
       - name: Coverage summary
         run: |
