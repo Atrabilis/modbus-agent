@@ -366,7 +366,7 @@ storage:
         user_env: "PG_USER_LOCAL"
         password_env: "PG_PASSWORD_LOCAL"
         database_env: "PG_DB_LOCAL"
-        schema: "landing"
+        schema: "edge"
         table: "diris_i35_shadow"
 ```
 
